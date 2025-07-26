@@ -533,9 +533,22 @@ class SmartTradingStrategy:
 
     def send_telegram_message(self, message):
         """Kirim pesan ke Telegram jika signal BUY/SELL/EXIT"""
+        # Check if Telegram is properly configured
+        if TELEGRAM_TOKEN == 'ISI_TOKEN_TELEGRAM_KAMU' or TELEGRAM_CHAT_ID == 'ISI_CHAT_ID_KAMU':
+            print("⚠️ [Telegram] Konfigurasi Telegram belum diatur!")
+            print("📝 Cara setup Telegram:")
+            print("   1. Buat bot di @BotFather di Telegram")
+            print("   2. Dapatkan token bot")
+            print("   3. Dapatkan chat_id (kirim /start ke bot)")
+            print("   4. Edit config.py atau set environment variables:")
+            print("      TELEGRAM_TOKEN=your_bot_token")
+            print("      TELEGRAM_CHAT_ID=your_chat_id")
+            return False
+        
         if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-            print("[Telegram] Token/chat_id belum diatur!")
-            return
+            print("⚠️ [Telegram] Token atau chat_id kosong!")
+            return False
+            
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {
             'chat_id': TELEGRAM_CHAT_ID,
@@ -545,11 +558,21 @@ class SmartTradingStrategy:
         try:
             resp = requests.post(url, data=payload, timeout=10)
             if resp.status_code == 200:
-                print("[Telegram] Pesan terkirim!")
+                print("✅ [Telegram] Pesan terkirim!")
+                return True
             else:
-                print(f"[Telegram] Gagal kirim pesan: {resp.text}")
+                print(f"❌ [Telegram] Gagal kirim pesan: {resp.status_code}")
+                print(f"   Response: {resp.text}")
+                return False
+        except requests.exceptions.Timeout:
+            print("⏰ [Telegram] Timeout - koneksi lambat")
+            return False
+        except requests.exceptions.ConnectionError:
+            print("🌐 [Telegram] Error koneksi - cek internet")
+            return False
         except Exception as e:
-            print(f"[Telegram] Error: {e}")
+            print(f"❌ [Telegram] Error: {e}")
+            return False
 
     def create_telegram_message(self, signal_type, current_data, reason, pair, additional_info=None):
         """Buat pesan Telegram yang menarik dan informatif"""

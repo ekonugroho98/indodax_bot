@@ -124,8 +124,10 @@ TRADING_PAIRS = [
 
 # === Konfigurasi Telegram ===
 # Isi dengan token dan chat_id Telegram Anda
-TELEGRAM_TOKEN = 'ISI_TOKEN_TELEGRAM_KAMU'
-TELEGRAM_CHAT_ID = 'ISI_CHAT_ID_KAMU'
+# Anda bisa menggunakan environment variables atau langsung isi di sini
+import os
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', 'ISI_TOKEN_TELEGRAM_KAMU')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', 'ISI_CHAT_ID_KAMU')
 
 # === Konfigurasi Risk Management ===
 STOP_LOSS_PERCENT = 0.02  # 2% stop loss
