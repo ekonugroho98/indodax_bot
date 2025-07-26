@@ -846,6 +846,9 @@ class SmartTradingStrategy:
         print(f"{'='*60}")
         
         for pair_config in self.trading_pairs:
+            if not pair_config['enabled']:
+                continue
+                
             pair = pair_config['pair']
             if len(self.price_history[pair]) == 0:
                 print(f"📊 {pair_config['display_name']}: Tidak ada data historis")
@@ -857,34 +860,37 @@ class SmartTradingStrategy:
             print(f"\n{pair_config['emoji']} <b>{pair_config['display_name']}:</b>")
             print(f"   Total data points: {len(self.price_history[pair])}")
             print(f"   Periode: {self.price_history[pair][0]['timestamp'].strftime('%Y-%m-%d %H:%M')} - {self.price_history[pair][-1]['timestamp'].strftime('%Y-%m-%d %H:%M')}")
-        print(f"   Harga tertinggi: Rp {max(prices):.6f}")
-        print(f"   Harga terendah: Rp {min(prices):.6f}")
-        print(f"   Harga rata-rata: Rp {np.mean(prices):.6f}")
-        print(f"   Volume rata-rata: {np.mean(volumes):.2f}")
-        
-        # Calculate price change
-        if len(prices) > 1:
-            price_change = ((prices[-1] - prices[0]) / prices[0]) * 100
-            print(f"   Perubahan harga: {price_change:+.2f}%")
-        
-            # Signal statistics
-            total_signals = sum(self.signal_counts[pair].values())
-            if total_signals > 0:
-                print(f"   BUY signals: {self.signal_counts[pair]['BUY']} ({self.signal_counts[pair]['BUY']/total_signals*100:.1f}%)")
-                print(f"   SELL signals: {self.signal_counts[pair]['SELL']} ({self.signal_counts[pair]['SELL']/total_signals*100:.1f}%)")
-                print(f"   HOLD signals: {self.signal_counts[pair]['HOLD']} ({self.signal_counts[pair]['HOLD']/total_signals*100:.1f}%)")
+            print(f"   Harga tertinggi: Rp {max(prices):.6f}")
+            print(f"   Harga terendah: Rp {min(prices):.6f}")
+            print(f"   Harga rata-rata: Rp {np.mean(prices):.6f}")
+            print(f"   Volume rata-rata: {np.mean(volumes):.2f}")
             
-            # Current position
-            if self.current_positions[pair]:
-                print(f"   Posisi saat ini: {self.current_positions[pair]}")
-                if self.entry_prices[pair]:
-                    current_price = prices[-1] if prices else 0
-                    if self.current_positions[pair] == "LONG":
-                        profit_loss = ((current_price - self.entry_prices[pair]) / self.entry_prices[pair]) * 100
-                    else:
-                        profit_loss = ((self.entry_prices[pair] - current_price) / self.entry_prices[pair]) * 100
-                    print(f"   P/L: {profit_loss:+.2f}%")
+            # Calculate price change
+            if len(prices) > 1:
+                price_change = ((prices[-1] - prices[0]) / prices[0]) * 100
+                print(f"   Perubahan harga: {price_change:+.2f}%")
+            
+                # Signal statistics
+                total_signals = sum(self.signal_counts[pair].values())
+                if total_signals > 0:
+                    print(f"   BUY signals: {self.signal_counts[pair]['BUY']} ({self.signal_counts[pair]['BUY']/total_signals*100:.1f}%)")
+                    print(f"   SELL signals: {self.signal_counts[pair]['SELL']} ({self.signal_counts[pair]['SELL']/total_signals*100:.1f}%)")
+                    print(f"   HOLD signals: {self.signal_counts[pair]['HOLD']} ({self.signal_counts[pair]['HOLD']/total_signals*100:.1f}%)")
+                
+                # Current position
+                if self.current_positions[pair]:
+                    print(f"   Posisi saat ini: {self.current_positions[pair]}")
+                    if self.entry_prices[pair]:
+                        current_price = prices[-1] if prices else 0
+                        if self.current_positions[pair] == "LONG":
+                            profit_loss = ((current_price - self.entry_prices[pair]) / self.entry_prices[pair]) * 100
+                        else:
+                            profit_loss = ((self.entry_prices[pair] - current_price) / self.entry_prices[pair]) * 100
+                        print(f"   P/L: {profit_loss:+.2f}%")
+                else:
+                    print(f"   Posisi saat ini: Tidak ada posisi aktif")
             else:
+                print(f"   Perubahan harga: Data tidak cukup")
                 print(f"   Posisi saat ini: Tidak ada posisi aktif")
         
         # Trading parameters
@@ -1010,7 +1016,19 @@ class SmartTradingStrategy:
     def analyze_timeframe_quality(self, pair):
         """Analisis kualitas timeframe untuk pair tertentu"""
         if len(self.price_history[pair]) < 10:
-            return "Data tidak cukup untuk analisis"
+            return {
+                'quality_score': 0,
+                'quality_level': "🔴 INSUFFICIENT",
+                'quality_factors': ["Data tidak cukup untuk analisis"],
+                'recommendation': "Perlu minimal 10 data points",
+                'stats': {
+                    'data_points': len(self.price_history[pair]),
+                    'duration_hours': 0,
+                    'avg_interval_seconds': 0,
+                    'price_volatility_percent': 0,
+                    'price_range_percent': 0
+                }
+            }
         
         prices = [p['price'] for p in self.price_history[pair]]
         timestamps = [p['timestamp'] for p in self.price_history[pair]]
