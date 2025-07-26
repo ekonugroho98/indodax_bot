@@ -501,7 +501,7 @@ class SmartTradingStrategy:
                 signal = "SELL"
         
         # 10. Entry timing check
-            if signal != "HOLD":
+        if signal != "HOLD":
             timing_ok, timing_reason = self.check_entry_timing(current_data, signal, pair)
             if not timing_ok:
                 signal = "HOLD"
@@ -810,45 +810,45 @@ class SmartTradingStrategy:
                         
                     pair = pair_config['pair']
                     current_data = self.get_price(pair)
-                if not current_data:
-                    continue
+                    if not current_data:
+                        continue
                 
-                # Check if there's a significant change
+                    # Check if there's a significant change
                     if self.has_significant_change(current_data, pair):
-                    # Update price history only when there's a change
+                        # Update price history only when there's a change
                         self.price_history[pair].append(current_data)
                         if len(self.price_history[pair]) > MAX_DATA_POINTS:  # Keep last data points dari config
                             self.price_history[pair].pop(0)
                     
-                    # Update last saved data
+                        # Update last saved data
                         self.last_saved_data[pair] = current_data.copy()
                     
-                    # Save data immediately when there's a change
+                        # Save data immediately when there's a change
                         self.save_historical_data(pair)
                     
-                    # Generate signal
+                        # Generate signal
                         signal, reason = self.generate_signal(current_data, pair)
-                        
+                    
                         # Execute trade
                         self.execute_trade(signal, current_data, reason, pair)
                     
-                    # Display results
-                    timestamp = current_data['timestamp'].strftime('%H:%M:%S')
+                        # Display results
+                        timestamp = current_data['timestamp'].strftime('%H:%M:%S')
                         print(f"\n⏰ {timestamp} | {pair_config['emoji']} {pair_config['display_name']} | Rp {current_data['price']:.6f} | 📊 {len(self.price_history[pair])} data points")
                     
                         if signal != self.previous_signals[pair]:
-                        if signal == "BUY":
+                            if signal == "BUY":
                                 print(f"🟢 SIGNAL: BELI {pair_config['name']}!")
-                            print(f"   Alasan: {reason}")
-                        elif signal == "SELL":
+                                print(f"   Alasan: {reason}")
+                            elif signal == "SELL":
                                 print(f"🔴 SIGNAL: JUAL {pair_config['name']}!")
                                 print(f"   Alasan: {reason}")
                             elif signal.startswith("EXIT"):
                                 print(f"🔄 SIGNAL: {signal}")
-                            print(f"   Alasan: {reason}")
-                        else:
-                            print(f"⚪ SIGNAL: HOLD")
-                            print(f"   Alasan: {reason}")
+                                print(f"   Alasan: {reason}")
+                            else:
+                                print(f"⚪ SIGNAL: HOLD")
+                                print(f"   Alasan: {reason}")
                         
                             self.previous_signals[pair] = signal
                         else:
@@ -863,9 +863,6 @@ class SmartTradingStrategy:
                                 profit_loss = ((self.entry_prices[pair] - current_price) / self.entry_prices[pair]) * 100
                             
                             print(f"   📊 Posisi: {self.current_positions[pair]} | P/L: {profit_loss:+.2f}%")
-                else:
-                    # Just show a dot to indicate the bot is still running
-                    print(".", end="", flush=True)
                 
                 time.sleep(5)  # Check every 5 seconds
                 
