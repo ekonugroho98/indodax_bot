@@ -131,7 +131,7 @@ TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '1433257992')
 
 # Telegram Notification Settings
 SEND_HOLD_SIGNALS = False  # Kirim HOLD signals ke Telegram untuk testing
-SEND_ALL_SIGNALS = True   # Kirim semua signal (BUY/SELL/EXIT/HOLD)
+SEND_ALL_SIGNALS = False   # Kirim semua signal (BUY/SELL/EXIT/HOLD)
 TELEGRAM_TEST_MODE = True # Mode testing untuk Telegram
 
 # === Konfigurasi Risk Management ===
