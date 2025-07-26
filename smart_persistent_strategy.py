@@ -751,7 +751,7 @@ class SmartTradingStrategy:
             # Kirim pesan Telegram
             telegram_msg = self.create_telegram_message(signal, current_data, reason, pair, additional_info)
             self.send_telegram_message(telegram_msg)
-
+    
     def show_statistics(self):
         """Menampilkan statistik data historis untuk semua pairs"""
         print(f"\n📊 STATISTIK SEMUA PAIRS:")
@@ -842,23 +842,23 @@ class SmartTradingStrategy:
                         self.price_history[pair].append(current_data)
                         if len(self.price_history[pair]) > MAX_DATA_POINTS:  # Keep last data points dari config
                             self.price_history[pair].pop(0)
-                    
+                        
                         # Update last saved data
                         self.last_saved_data[pair] = current_data.copy()
-                    
+                        
                         # Save data immediately when there's a change
                         self.save_historical_data(pair)
-                    
+                        
                         # Generate signal
                         signal, reason = self.generate_signal(current_data, pair)
-                    
+                        
                         # Execute trade
                         self.execute_trade(signal, current_data, reason, pair)
-                    
+                        
                         # Display results
                         timestamp = current_data['timestamp'].strftime('%H:%M:%S')
                         print(f"\n⏰ {timestamp} | {pair_config['emoji']} {pair_config['display_name']} | Rp {current_data['price']:.6f} | 📊 {len(self.price_history[pair])} data points")
-                    
+                        
                         if signal != self.previous_signals[pair]:
                             if signal == "BUY":
                                 print(f"🟢 SIGNAL: BELI {pair_config['name']}!")
@@ -872,20 +872,25 @@ class SmartTradingStrategy:
                             else:
                                 print(f"⚪ SIGNAL: HOLD")
                                 print(f"   Alasan: {reason}")
-                        
+                            
                             self.previous_signals[pair] = signal
                         else:
                             print(f"   Signal: {signal} | {reason}")
-                        
-                        # Show current position info
-                        if self.current_positions[pair]:
-                            current_price = current_data['price']
-                            if self.current_positions[pair] == "LONG":
-                                profit_loss = ((current_price - self.entry_prices[pair]) / self.entry_prices[pair]) * 100
-                            else:  # SHORT
-                                profit_loss = ((self.entry_prices[pair] - current_price) / self.entry_prices[pair]) * 100
                             
-                            print(f"   📊 Posisi: {self.current_positions[pair]} | P/L: {profit_loss:+.2f}%")
+                            # Show current position info
+                            if self.current_positions[pair]:
+                                current_price = current_data['price']
+                                if self.current_positions[pair] == "LONG":
+                                    profit_loss = ((current_price - self.entry_prices[pair]) / self.entry_prices[pair]) * 100
+                                else:  # SHORT
+                                    profit_loss = ((self.entry_prices[pair] - current_price) / self.entry_prices[pair]) * 100
+                                
+                                print(f"   📊 Posisi: {self.current_positions[pair]} | P/L: {profit_loss:+.2f}%")
+                    else:
+                        # No significant change, just show current status
+                        timestamp = current_data['timestamp'].strftime('%H:%M:%S')
+                        print(f"⏰ {timestamp} | {pair_config['emoji']} {pair_config['display_name']} | Rp {current_data['price']:.6f} | 📊 {len(self.price_history[pair])} data points")
+                        print(f"   Signal: HOLD | Tidak ada perubahan signifikan")
                 
                 time.sleep(5)  # Check every 5 seconds
                 
