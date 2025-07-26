@@ -141,5 +141,48 @@ VOLUME_THRESHOLD = 0.8  # Volume minimal 0.8x rata-rata
 VOLATILITY_THRESHOLD = 0.02  # 2% volatility threshold
 
 # === Konfigurasi Data Management ===
-MAX_DATA_POINTS = 1000  # Maksimal data points per pair
-MIN_DATA_POINTS = 30  # Minimal data points untuk generate signal 
+# Data Management Tiers untuk berbagai jenis analisis
+DATA_MANAGEMENT_TIERS = {
+    'scalping': {
+        'max_points': 2000,      # 2-3 jam data untuk scalping real-time
+        'min_points': 100,       # Minimal untuk scalping
+        'interval': 5,           # 5 detik interval
+        'purpose': 'Real-time scalping signals'
+    },
+    'swing': {
+        'max_points': 10000,     # 1-2 hari data untuk swing trading
+        'min_points': 500,       # Minimal untuk swing analysis
+        'interval': 30,          # 30 detik interval
+        'purpose': 'Swing trading patterns'
+    },
+    'position': {
+        'max_points': 50000,     # 1-2 minggu data untuk position trading
+        'min_points': 2000,      # Minimal untuk position analysis
+        'interval': 300,         # 5 menit interval
+        'purpose': 'Long-term position analysis'
+    }
+}
+
+# Default settings (backward compatibility)
+MAX_DATA_POINTS = 10000  # Increased from 1000 to 10000
+MIN_DATA_POINTS = 100    # Increased from 30 to 100
+
+# Data Storage Optimization
+ENABLE_DATA_COMPRESSION = True   # Compress old data
+ENABLE_DATA_ARCHIVING = True     # Archive data older than 1 week
+ARCHIVE_INTERVAL_HOURS = 168     # Archive after 1 week (168 hours)
+
+# Performance Settings
+ENABLE_LAZY_LOADING = True       # Load data on demand
+ENABLE_DATA_CACHING = True       # Cache frequently used data
+CACHE_SIZE_MB = 50               # 50MB cache size
+
+# === Konfigurasi Scalping-Specific ===
+SCALPING_MODE = True  # Enable scalping optimizations
+SCALPING_RSI_3_OVERSOLD = 20  # RSI 3-period oversold threshold
+SCALPING_RSI_3_OVERBOUGHT = 80  # RSI 3-period overbought threshold
+SCALPING_MOMENTUM_ROC3_THRESHOLD = 1.0  # ROC 3-period threshold
+SCALPING_VOLATILITY_CV_LOW = 1.0  # Low volatility threshold
+SCALPING_VOLATILITY_CV_HIGH = 3.0  # High volatility threshold
+SCALPING_MIN_SIGNAL_STRENGTH = 4  # Higher threshold for scalping
+SCALPING_COOLDOWN = 60  # Shorter cooldown for scalping (1 minute) 

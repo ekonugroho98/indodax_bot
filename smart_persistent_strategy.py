@@ -23,6 +23,12 @@ class SmartTradingStrategy:
         self.data_files = {}  # {pair: filename}
         self.last_saved_data = {}  # {pair: data}
         
+        # Enhanced data management
+        self.data_cache = {}  # {pair: cached_data}
+        self.archived_data = {}  # {pair: archived_data}
+        self.data_tiers = DATA_MANAGEMENT_TIERS
+        self.current_tier = 'scalping'  # Default tier
+        
         # Trading state untuk setiap pair
         self.current_positions = {}  # {pair: "LONG"/"SHORT"/None}
         self.entry_prices = {}  # {pair: price}
@@ -48,6 +54,8 @@ class SmartTradingStrategy:
             self.previous_signals[pair] = None
             self.data_files[pair] = f"{pair}_historical_data.json"
             self.last_saved_data[pair] = None
+            self.data_cache[pair] = None
+            self.archived_data[pair] = []
             self.current_positions[pair] = None
             self.entry_prices[pair] = None
             self.entry_times[pair] = None
@@ -71,7 +79,7 @@ class SmartTradingStrategy:
         """Load data historis untuk semua pairs"""
         for pair_config in self.trading_pairs:
             pair = pair_config['pair']
-            self.load_historical_data(pair)
+            self.load_historical_data_enhanced(pair)
         
     def load_historical_data(self, pair):
         """Load data historis dari file untuk pair tertentu"""
@@ -238,10 +246,45 @@ class SmartTradingStrategy:
     
     def calculate_multi_timeframe_rsi(self, prices):
         """RSI dengan multiple timeframe untuk konfirmasi"""
-        rsi_5 = self.calculate_rsi(prices, 5)   # Short term
-        rsi_14 = self.calculate_rsi(prices, 14) # Medium term
+        rsi_3 = self.calculate_rsi(prices, 3)    # Ultra short term (scalping)
+        rsi_5 = self.calculate_rsi(prices, 5)    # Short term
+        rsi_14 = self.calculate_rsi(prices, 14)  # Medium term
         
-        return rsi_5, rsi_14
+        return rsi_3, rsi_5, rsi_14
+    
+    def calculate_momentum_indicators(self, prices):
+        """Hitung momentum indicators untuk scalping"""
+        if len(prices) < 10:
+            return None, None, None
+        
+        # Rate of Change (ROC) - 3 period untuk scalping
+        roc_3 = ((prices[-1] - prices[-4]) / prices[-4]) * 100 if len(prices) >= 4 else 0
+        
+        # Price Rate of Change - 5 period
+        roc_5 = ((prices[-1] - prices[-6]) / prices[-6]) * 100 if len(prices) >= 6 else 0
+        
+        # Momentum - 10 period
+        momentum_10 = prices[-1] - prices[-11] if len(prices) >= 11 else 0
+        
+        return roc_3, roc_5, momentum_10
+    
+    def calculate_volatility_indicators(self, prices):
+        """Hitung volatility indicators untuk scalping"""
+        if len(prices) < 20:
+            return None, None, None
+        
+        # True Range (ATR) - 14 period
+        high_low = [abs(prices[i] - prices[i-1]) for i in range(1, len(prices))]
+        atr_14 = np.mean(high_low[-14:]) if len(high_low) >= 14 else 0
+        
+        # Standard Deviation - 10 period
+        recent_prices = prices[-10:]
+        std_dev = np.std(recent_prices)
+        
+        # Coefficient of Variation (CV)
+        cv = (std_dev / np.mean(recent_prices)) * 100 if np.mean(recent_prices) > 0 else 0
+        
+        return atr_14, std_dev, cv
     
     def calculate_sma(self, prices, period):
         """Menghitung Simple Moving Average"""
@@ -401,8 +444,14 @@ class SmartTradingStrategy:
         
         prices = [p['price'] for p in self.price_history[pair]]
         
-        # Multi-timeframe RSI
-        rsi_5, rsi_14 = self.calculate_multi_timeframe_rsi(prices)
+        # Multi-timeframe RSI dengan ultra-short term
+        rsi_3, rsi_5, rsi_14 = self.calculate_multi_timeframe_rsi(prices)
+        
+        # Momentum indicators untuk scalping
+        roc_3, roc_5, momentum_10 = self.calculate_momentum_indicators(prices)
+        
+        # Volatility indicators
+        atr_14, std_dev, cv = self.calculate_volatility_indicators(prices)
         
         # SMA dengan periode berbeda
         sma_5 = self.calculate_sma(prices, 5)
@@ -428,12 +477,21 @@ class SmartTradingStrategy:
         reason = []
         signal_strength = 0
         
-        # 1. RSI Strategy (dengan konfirmasi multi-timeframe)
-        if rsi_5 and rsi_14:
-            if rsi_5 < 25 and rsi_14 < 30:  # Lebih ekstrem
+        # 1. Ultra-Short Term RSI Strategy (scalping specific)
+        if rsi_3 and rsi_5 and rsi_14:
+            # Scalping BUY: RSI 3-period oversold dengan konfirmasi
+            if rsi_3 < SCALPING_RSI_3_OVERSOLD and rsi_5 < 30 and rsi_14 < 35:
+                signal_strength += 2  # Higher weight for scalping
+                reason.append(f"RSI Scalping BUY (3m:{rsi_3:.1f}, 5m:{rsi_5:.1f}, 14m:{rsi_14:.1f})")
+            # Scalping SELL: RSI 3-period overbought dengan konfirmasi
+            elif rsi_3 > SCALPING_RSI_3_OVERBOUGHT and rsi_5 > 70 and rsi_14 > 65:
+                signal_strength += 2  # Higher weight for scalping
+                reason.append(f"RSI Scalping SELL (3m:{rsi_3:.1f}, 5m:{rsi_5:.1f}, 14m:{rsi_14:.1f})")
+            # Regular RSI signals
+            elif rsi_5 < 25 and rsi_14 < 30:
                 signal_strength += 1
                 reason.append(f"RSI oversold (5m:{rsi_5:.1f}, 14m:{rsi_14:.1f})")
-            elif rsi_5 > 75 and rsi_14 > 70:  # Lebih ekstrem
+            elif rsi_5 > 75 and rsi_14 > 70:
                 signal_strength += 1
                 reason.append(f"RSI overbought (5m:{rsi_5:.1f}, 14m:{rsi_14:.1f})")
         
@@ -460,7 +518,29 @@ class SmartTradingStrategy:
             signal_strength += 1
             reason.append(f"Orderbook Sell Pressure ({orderbook_ratio:.2f}x)")
         
-        # 4. Trade Dominance Analysis
+        # 4. Momentum-Based Scalping Signals
+        if roc_3 and roc_5 and momentum_10:
+            # Strong momentum BUY signals
+            if roc_3 > SCALPING_MOMENTUM_ROC3_THRESHOLD and roc_5 > 0.5 and momentum_10 > 0:
+                signal_strength += 2
+                reason.append(f"Momentum BUY (ROC3:{roc_3:.2f}%, ROC5:{roc_5:.2f}%)")
+            # Strong momentum SELL signals
+            elif roc_3 < -SCALPING_MOMENTUM_ROC3_THRESHOLD and roc_5 < -0.5 and momentum_10 < 0:
+                signal_strength += 2
+                reason.append(f"Momentum SELL (ROC3:{roc_3:.2f}%, ROC5:{roc_5:.2f}%)")
+        
+        # 5. Volatility-Based Scalping Signals
+        if atr_14 and cv:
+            # Low volatility = good for scalping
+            if cv < SCALPING_VOLATILITY_CV_LOW:  # Low volatility
+                signal_strength += 1
+                reason.append(f"Low Volatility (CV:{cv:.2f}%)")
+            # High volatility = avoid scalping
+            elif cv > SCALPING_VOLATILITY_CV_HIGH:
+                signal_strength = 0
+                reason.append(f"High Volatility (CV:{cv:.2f}%)")
+        
+        # 6. Trade Dominance Analysis
         if buy_ratio > 0.7:  # 70% transaksi adalah BUY
             signal_strength += 1
             reason.append(f"Trade Dominance BUY ({buy_ratio*100:.1f}%)")
@@ -478,11 +558,12 @@ class SmartTradingStrategy:
             signal_strength = 0
             reason.append(f"Volatilitas tinggi ({volatility*100:.1f}%)")
         
-        # 7. Cooldown check
+        # 7. Cooldown check (scalping mode uses shorter cooldown)
+        cooldown_time = SCALPING_COOLDOWN if SCALPING_MODE else self.signal_cooldown
         if self.last_signal_times[pair]:
             time_since_last = (current_data['timestamp'] - self.last_signal_times[pair]).total_seconds()
-            if time_since_last < self.signal_cooldown and signal_strength > 0:
-                remaining_cooldown = self.signal_cooldown - time_since_last
+            if time_since_last < cooldown_time and signal_strength > 0:
+                remaining_cooldown = cooldown_time - time_since_last
                 signal_strength = 0
                 reason.append(f"Cooldown ({remaining_cooldown:.0f}s tersisa)")
         
@@ -492,12 +573,13 @@ class SmartTradingStrategy:
             reason.append(f"Terlalu banyak signal berturut-turut ({self.consecutive_signals[pair]})")
         
         # 9. Generate final signal berdasarkan strength
-        if signal_strength >= MIN_SIGNAL_STRENGTH:  # Minimal strength dari config
+        min_strength = SCALPING_MIN_SIGNAL_STRENGTH if SCALPING_MODE else MIN_SIGNAL_STRENGTH
+        if signal_strength >= min_strength:  # Minimal strength dari config
             if ("Bullish" in str(reason) or "Buy Pressure" in str(reason) or 
-                ("oversold" in str(reason) and signal_strength >= MIN_SIGNAL_STRENGTH)):
+                ("oversold" in str(reason) and signal_strength >= min_strength)):
                 signal = "BUY"
             elif ("Bearish" in str(reason) or "Sell Pressure" in str(reason) or 
-                  ("overbought" in str(reason) and signal_strength >= MIN_SIGNAL_STRENGTH)):
+                  ("overbought" in str(reason) and signal_strength >= min_strength)):
                 signal = "SELL"
         
         # 10. Entry timing check
@@ -525,6 +607,12 @@ class SmartTradingStrategy:
         market_info.append(f"OB:{orderbook_ratio:.2f}x")
         market_info.append(f"TD:{buy_ratio*100:.0f}%")
         market_info.append(f"Vol:{volume_ratio:.2f}x")
+        
+        # Add scalping-specific indicators
+        if roc_3:
+            market_info.append(f"ROC3:{roc_3:.2f}%")
+        if cv:
+            market_info.append(f"CV:{cv:.2f}%")
         
         full_reason = ", ".join(reason) if reason else "Tidak ada sinyal jelas"
         full_reason += f" | Market: {' | '.join(market_info)}"
@@ -824,6 +912,12 @@ class SmartTradingStrategy:
         # Show initial statistics
         self.show_statistics()
         
+        # Show timeframe quality analysis
+        self.show_timeframe_analysis()
+        
+        # Show data management dashboard
+        self.show_data_management_dashboard()
+        
         try:
             while True:
                 # Process each pair
@@ -840,14 +934,15 @@ class SmartTradingStrategy:
                     if self.has_significant_change(current_data, pair):
                         # Update price history only when there's a change
                         self.price_history[pair].append(current_data)
-                        if len(self.price_history[pair]) > MAX_DATA_POINTS:  # Keep last data points dari config
-                            self.price_history[pair].pop(0)
+                        
+                        # Optimize data points based on current tier
+                        self.get_optimized_data_points(pair)
                         
                         # Update last saved data
                         self.last_saved_data[pair] = current_data.copy()
                         
                         # Save data immediately when there's a change
-                        self.save_historical_data(pair)
+                        self.save_historical_data_enhanced(pair)
                         
                         # Generate signal
                         signal, reason = self.generate_signal(current_data, pair)
@@ -911,6 +1006,339 @@ class SmartTradingStrategy:
                         print(f"   {pair_config['display_name']}: BUY:{self.signal_counts[pair]['BUY']} SELL:{self.signal_counts[pair]['SELL']} HOLD:{self.signal_counts[pair]['HOLD']}")
             print(" Storage efficiency: Smart saving (hanya perubahan)")
             print("👋 Goodbye!")
+
+    def analyze_timeframe_quality(self, pair):
+        """Analisis kualitas timeframe untuk pair tertentu"""
+        if len(self.price_history[pair]) < 10:
+            return "Data tidak cukup untuk analisis"
+        
+        prices = [p['price'] for p in self.price_history[pair]]
+        timestamps = [p['timestamp'] for p in self.price_history[pair]]
+        
+        # Calculate timeframe statistics
+        total_duration = (timestamps[-1] - timestamps[0]).total_seconds() / 3600  # hours
+        data_points = len(self.price_history[pair])
+        avg_interval = total_duration / data_points if data_points > 1 else 0
+        
+        # Calculate data quality metrics
+        price_volatility = np.std(prices) / np.mean(prices) * 100
+        price_range = ((max(prices) - min(prices)) / min(prices)) * 100
+        
+        # Determine timeframe quality
+        quality_score = 0
+        quality_factors = []
+        
+        # Data quantity factor
+        if data_points >= 1000:
+            quality_score += 30
+            quality_factors.append("Data points: Excellent (1000+)")
+        elif data_points >= 500:
+            quality_score += 20
+            quality_factors.append("Data points: Good (500+)")
+        elif data_points >= 100:
+            quality_score += 10
+            quality_factors.append("Data points: Fair (100+)")
+        else:
+            quality_factors.append("Data points: Poor (<100)")
+        
+        # Time duration factor
+        if total_duration >= 168:  # 1 week
+            quality_score += 25
+            quality_factors.append("Duration: Excellent (1+ week)")
+        elif total_duration >= 72:  # 3 days
+            quality_score += 15
+            quality_factors.append("Duration: Good (3+ days)")
+        elif total_duration >= 24:  # 1 day
+            quality_score += 10
+            quality_factors.append("Duration: Fair (1+ day)")
+        else:
+            quality_factors.append("Duration: Poor (<1 day)")
+        
+        # Data consistency factor
+        if avg_interval <= 10:  # 10 seconds or less
+            quality_score += 25
+            quality_factors.append("Interval: Excellent (≤10s)")
+        elif avg_interval <= 30:  # 30 seconds
+            quality_score += 15
+            quality_factors.append("Interval: Good (≤30s)")
+        elif avg_interval <= 60:  # 1 minute
+            quality_score += 10
+            quality_factors.append("Interval: Fair (≤1m)")
+        else:
+            quality_factors.append("Interval: Poor (>1m)")
+        
+        # Market activity factor
+        if price_volatility >= 1.0:
+            quality_score += 20
+            quality_factors.append("Volatility: Active market")
+        elif price_volatility >= 0.5:
+            quality_score += 15
+            quality_factors.append("Volatility: Moderate")
+        else:
+            quality_score += 5
+            quality_factors.append("Volatility: Low activity")
+        
+        # Determine overall quality
+        if quality_score >= 80:
+            quality_level = "🟢 EXCELLENT"
+            recommendation = "Timeframe optimal untuk scalping"
+        elif quality_score >= 60:
+            quality_level = "🟡 GOOD"
+            recommendation = "Timeframe cukup baik, lanjutkan monitoring"
+        elif quality_score >= 40:
+            quality_level = "🟠 FAIR"
+            recommendation = "Perlu lebih banyak data untuk akurasi optimal"
+        else:
+            quality_level = "🔴 POOR"
+            recommendation = "Perlu waktu lebih lama untuk membangun timeframe"
+        
+        return {
+            'quality_score': quality_score,
+            'quality_level': quality_level,
+            'quality_factors': quality_factors,
+            'recommendation': recommendation,
+            'stats': {
+                'data_points': data_points,
+                'duration_hours': total_duration,
+                'avg_interval_seconds': avg_interval,
+                'price_volatility_percent': price_volatility,
+                'price_range_percent': price_range
+            }
+        }
+    
+    def show_timeframe_analysis(self):
+        """Tampilkan analisis timeframe untuk semua pairs"""
+        print(f"\n📊 TIMEFRAME QUALITY ANALYSIS:")
+        print(f"{'='*60}")
+        
+        for pair_config in self.trading_pairs:
+            if not pair_config['enabled']:
+                continue
+                
+            pair = pair_config['pair']
+            analysis = self.analyze_timeframe_quality(pair)
+            
+            print(f"\n{pair_config['emoji']} {pair_config['display_name']}:")
+            print(f"   Quality: {analysis['quality_level']} ({analysis['quality_score']}/100)")
+            print(f"   Recommendation: {analysis['recommendation']}")
+            
+            stats = analysis['stats']
+            print(f"   📈 Data Points: {stats['data_points']:,}")
+            print(f"   ⏰ Duration: {stats['duration_hours']:.1f} hours")
+            print(f"   🔄 Avg Interval: {stats['avg_interval_seconds']:.1f}s")
+            print(f"   📊 Volatility: {stats['price_volatility_percent']:.2f}%")
+            print(f"   📈 Price Range: {stats['price_range_percent']:.2f}%")
+            
+            print(f"   📋 Quality Factors:")
+            for factor in analysis['quality_factors']:
+                print(f"      • {factor}")
+
+    def get_current_tier_settings(self):
+        """Dapatkan setting untuk tier saat ini"""
+        return self.data_tiers.get(self.current_tier, self.data_tiers['scalping'])
+    
+    def switch_data_tier(self, tier_name):
+        """Switch ke tier data yang berbeda"""
+        if tier_name in self.data_tiers:
+            self.current_tier = tier_name
+            print(f"🔄 Switched to {tier_name} tier: {self.data_tiers[tier_name]['purpose']}")
+            return True
+        else:
+            print(f"❌ Invalid tier: {tier_name}")
+            return False
+    
+    def compress_data(self, data_list):
+        """Compress data untuk menghemat storage"""
+        if not ENABLE_DATA_COMPRESSION:
+            return data_list
+        
+        compressed_data = []
+        for i, item in enumerate(data_list):
+            if i == 0 or i == len(data_list) - 1:  # Keep first and last
+                compressed_data.append(item)
+            elif i % 5 == 0:  # Keep every 5th item
+                compressed_data.append(item)
+            elif abs(item['price'] - data_list[i-1]['price']) / data_list[i-1]['price'] > 0.001:  # Keep significant changes
+                compressed_data.append(item)
+        
+        return compressed_data
+    
+    def archive_old_data(self, pair):
+        """Archive data yang sudah lama"""
+        if not ENABLE_DATA_ARCHIVING:
+            return
+        
+        current_time = datetime.now()
+        data_to_archive = []
+        data_to_keep = []
+        
+        for item in self.price_history[pair]:
+            age_hours = (current_time - item['timestamp']).total_seconds() / 3600
+            if age_hours > ARCHIVE_INTERVAL_HOURS:
+                data_to_archive.append(item)
+            else:
+                data_to_keep.append(item)
+        
+        if data_to_archive:
+            self.archived_data[pair].extend(data_to_archive)
+            self.price_history[pair] = data_to_keep
+            print(f"📦 Archived {len(data_to_archive)} old data points for {pair}")
+    
+    def get_optimized_data_points(self, pair):
+        """Dapatkan jumlah data points optimal berdasarkan tier"""
+        tier_settings = self.get_current_tier_settings()
+        max_points = tier_settings['max_points']
+        
+        # Jika data melebihi max_points, compress atau archive
+        if len(self.price_history[pair]) > max_points:
+            if ENABLE_DATA_ARCHIVING:
+                self.archive_old_data(pair)
+            
+            # Trim ke max_points
+            if len(self.price_history[pair]) > max_points:
+                excess = len(self.price_history[pair]) - max_points
+                self.price_history[pair] = self.price_history[pair][excess:]
+                print(f"✂️ Trimmed {excess} data points for {pair}")
+        
+        return len(self.price_history[pair])
+    
+    def save_historical_data_enhanced(self, pair):
+        """Save data historis dengan compression dan archiving"""
+        try:
+            data_file = self.data_files[pair]
+            
+            # Compress data jika enabled
+            data_to_save = self.compress_data(self.price_history[pair]) if ENABLE_DATA_COMPRESSION else self.price_history[pair]
+            
+            # Convert datetime objects to strings for JSON serialization
+            data_to_save_serialized = []
+            for item in data_to_save:
+                item_copy = item.copy()
+                item_copy['timestamp'] = item['timestamp'].isoformat()
+                data_to_save_serialized.append(item_copy)
+            
+            # Save main data
+            with open(data_file, 'w') as f:
+                json.dump(data_to_save_serialized, f, indent=2)
+            
+            # Save archived data if exists
+            if self.archived_data[pair]:
+                archive_file = f"{pair}_archived_data.json"
+                archived_serialized = []
+                for item in self.archived_data[pair]:
+                    item_copy = item.copy()
+                    item_copy['timestamp'] = item['timestamp'].isoformat()
+                    archived_serialized.append(item_copy)
+                
+                with open(archive_file, 'w') as f:
+                    json.dump(archived_serialized, f, indent=2)
+            
+            print(f"💾 Saved {len(data_to_save)} data points to {data_file}")
+            if self.archived_data[pair]:
+                print(f"📦 Archived data: {len(self.archived_data[pair])} points")
+                
+        except Exception as e:
+            print(f"⚠️ Error saving data for {pair}: {e}")
+    
+    def load_historical_data_enhanced(self, pair):
+        """Load data historis dengan archived data"""
+        try:
+            data_file = self.data_files[pair]
+            archive_file = f"{pair}_archived_data.json"
+            
+            # Load main data
+            if os.path.exists(data_file):
+                with open(data_file, 'r') as f:
+                    data = json.load(f)
+                    # Convert string timestamps back to datetime objects
+                    for item in data:
+                        item['timestamp'] = datetime.fromisoformat(item['timestamp'])
+                    self.price_history[pair] = data
+                    print(f"📂 Loaded {len(self.price_history[pair])} historical data points for {pair}")
+                    
+                    # Set last saved data to the most recent entry
+                    if self.price_history[pair]:
+                        self.last_saved_data[pair] = self.price_history[pair][-1].copy()
+            else:
+                print(f"📂 No historical data found for {pair}, starting fresh")
+            
+            # Load archived data
+            if os.path.exists(archive_file):
+                with open(archive_file, 'r') as f:
+                    archived_data = json.load(f)
+                    # Convert string timestamps back to datetime objects
+                    for item in archived_data:
+                        item['timestamp'] = datetime.fromisoformat(item['timestamp'])
+                    self.archived_data[pair] = archived_data
+                    print(f"📦 Loaded {len(self.archived_data[pair])} archived data points for {pair}")
+                    
+        except Exception as e:
+            print(f"⚠️ Error loading historical data for {pair}: {e}")
+            self.price_history[pair] = []
+            self.archived_data[pair] = []
+
+    def show_data_management_dashboard(self):
+        """Tampilkan dashboard manajemen data"""
+        print(f"\n📊 DATA MANAGEMENT DASHBOARD:")
+        print(f"{'='*60}")
+        
+        current_tier = self.get_current_tier_settings()
+        print(f"🎯 Current Tier: {self.current_tier.upper()}")
+        print(f"📋 Purpose: {current_tier['purpose']}")
+        print(f"📈 Max Points: {current_tier['max_points']:,}")
+        print(f"⏰ Interval: {current_tier['interval']} seconds")
+        
+        print(f"\n📊 Available Tiers:")
+        for tier_name, settings in self.data_tiers.items():
+            status = "🟢 ACTIVE" if tier_name == self.current_tier else "⚪ Available"
+            print(f"   {tier_name.upper()}: {settings['max_points']:,} points | {settings['interval']}s | {status}")
+        
+        print(f"\n💾 Storage Settings:")
+        print(f"   Compression: {'✅ Enabled' if ENABLE_DATA_COMPRESSION else '❌ Disabled'}")
+        print(f"   Archiving: {'✅ Enabled' if ENABLE_DATA_ARCHIVING else '❌ Disabled'}")
+        print(f"   Cache: {'✅ Enabled' if ENABLE_DATA_CACHING else '❌ Disabled'}")
+        print(f"   Archive Interval: {ARCHIVE_INTERVAL_HOURS} hours")
+        
+        print(f"\n📈 Data Statistics by Pair:")
+        total_main_data = 0
+        total_archived_data = 0
+        
+        for pair_config in self.trading_pairs:
+            if not pair_config['enabled']:
+                continue
+                
+            pair = pair_config['pair']
+            main_data_count = len(self.price_history[pair])
+            archived_data_count = len(self.archived_data[pair])
+            total_main_data += main_data_count
+            total_archived_data += archived_data_count
+            
+            print(f"   {pair_config['emoji']} {pair_config['display_name']}:")
+            print(f"      Main: {main_data_count:,} points")
+            print(f"      Archived: {archived_data_count:,} points")
+            print(f"      Total: {main_data_count + archived_data_count:,} points")
+        
+        print(f"\n📊 Total Data:")
+        print(f"   Main Data: {total_main_data:,} points")
+        print(f"   Archived Data: {total_archived_data:,} points")
+        print(f"   Total: {total_main_data + total_archived_data:,} points")
+        
+        # Calculate storage usage
+        estimated_size_mb = (total_main_data + total_archived_data) * 0.0002  # ~200 bytes per data point
+        print(f"   Estimated Size: {estimated_size_mb:.2f} MB")
+        
+        print(f"\n💡 Recommendations:")
+        if total_main_data < 1000:
+            print(f"   🔴 Need more data: Current data insufficient for reliable analysis")
+        elif total_main_data < 5000:
+            print(f"   🟡 Good progress: Data building up nicely")
+        else:
+            print(f"   🟢 Excellent: Sufficient data for advanced analysis")
+        
+        if total_archived_data > 0:
+            print(f"   📦 Archiving working: {total_archived_data:,} points archived")
+        
+        print(f"   💾 Consider switching tiers based on your trading strategy")
 
 if __name__ == "__main__":
     # Buat bot dengan semua pairs yang enabled
