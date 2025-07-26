@@ -130,7 +130,7 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '8430603365:AAEtZf6AjhsbQuaHnec5EJw
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '1433257992')
 
 # Telegram Notification Settings
-SEND_HOLD_SIGNALS = True  # Kirim HOLD signals ke Telegram untuk testing
+SEND_HOLD_SIGNALS = False  # Kirim HOLD signals ke Telegram untuk testing
 SEND_ALL_SIGNALS = True   # Kirim semua signal (BUY/SELL/EXIT/HOLD)
 TELEGRAM_TEST_MODE = True # Mode testing untuk Telegram
 
