@@ -662,6 +662,41 @@ class SmartTradingStrategy:
             print(f"❌ [Telegram] Error: {e}")
             return False
 
+    def send_test_telegram_message(self):
+        """Kirim pesan test ke Telegram untuk verifikasi koneksi"""
+        test_message = """
+🧪 <b>TELEGRAM TEST MESSAGE</b> 🧪
+
+✅ Bot berhasil terhubung ke Telegram!
+📱 Notifikasi akan dikirim untuk semua signal
+
+🔧 <b>Test Settings:</b>
+• SEND_ALL_SIGNALS: {send_all}
+• SEND_HOLD_SIGNALS: {send_hold}
+• TELEGRAM_TEST_MODE: {test_mode}
+
+⏰ <b>Timestamp:</b> {timestamp}
+
+🤖 <b>Bot Status:</b> Online & Ready
+📊 <b>Monitoring:</b> {pair_count} pairs
+
+---
+<i>Ini adalah pesan test untuk memverifikasi koneksi Telegram</i>
+        """.format(
+            send_all="✅ Enabled" if SEND_ALL_SIGNALS else "❌ Disabled",
+            send_hold="✅ Enabled" if SEND_HOLD_SIGNALS else "❌ Disabled", 
+            test_mode="✅ Enabled" if TELEGRAM_TEST_MODE else "❌ Disabled",
+            timestamp=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            pair_count=len([p for p in self.trading_pairs if p['enabled']])
+        )
+        
+        success = self.send_telegram_message(test_message)
+        if success:
+            print("✅ Telegram test message sent successfully!")
+        else:
+            print("❌ Failed to send Telegram test message")
+        return success
+
     def create_telegram_message(self, signal_type, current_data, reason, pair, additional_info=None):
         """Buat pesan Telegram yang menarik dan informatif"""
         current_price = current_data['price']
@@ -737,8 +772,11 @@ class SmartTradingStrategy:
         current_price = current_data['price']
         current_time = current_data['timestamp']
         
-        # === Kirim signal ke Telegram untuk BUY/SELL/EXIT ===
-        if signal in ("BUY", "SELL", "EXIT"):
+        # === Kirim signal ke Telegram ===
+        # Kirim semua signal jika SEND_ALL_SIGNALS = True, atau hanya BUY/SELL/EXIT jika False
+        should_send_telegram = (SEND_ALL_SIGNALS and signal in ("BUY", "SELL", "EXIT", "HOLD")) or (not SEND_ALL_SIGNALS and signal in ("BUY", "SELL", "EXIT"))
+        
+        if should_send_telegram:
             additional_info = {}
             
             if signal == "BUY" and self.current_positions[pair] != "LONG":
@@ -836,6 +874,23 @@ class SmartTradingStrategy:
                 self.stop_losses[pair] = None
                 self.take_profits[pair] = None
             
+            # Handle HOLD signal
+            elif signal == "HOLD":
+                # Tambahkan info untuk HOLD signal
+                additional_info["Status"] = "⏸️ HOLDING"
+                additional_info["Reason"] = reason
+                if self.current_positions[pair]:
+                    additional_info["Current Position"] = self.current_positions[pair]
+                    if self.entry_prices[pair]:
+                        current_price = current_data['price']
+                        if self.current_positions[pair] == "LONG":
+                            profit_loss = ((current_price - self.entry_prices[pair]) / self.entry_prices[pair]) * 100
+                        else:  # SHORT
+                            profit_loss = ((self.entry_prices[pair] - current_price) / self.entry_prices[pair]) * 100
+                        additional_info["Current P/L"] = f"{profit_loss:+.2f}%"
+                else:
+                    additional_info["Current Position"] = "No Position"
+            
             # Kirim pesan Telegram
             telegram_msg = self.create_telegram_message(signal, current_data, reason, pair, additional_info)
             self.send_telegram_message(telegram_msg)
@@ -923,6 +978,11 @@ class SmartTradingStrategy:
         
         # Show data management dashboard
         self.show_data_management_dashboard()
+        
+        # Send Telegram test message if in test mode
+        if TELEGRAM_TEST_MODE:
+            print("\n🧪 Sending Telegram test message...")
+            self.send_test_telegram_message()
         
         try:
             while True:

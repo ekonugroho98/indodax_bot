@@ -126,8 +126,13 @@ TRADING_PAIRS = [
 # Isi dengan token dan chat_id Telegram Anda
 # Anda bisa menggunakan environment variables atau langsung isi di sini
 import os
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', 'ISI_TOKEN_TELEGRAM_KAMU')
-TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', 'ISI_CHAT_ID_KAMU')
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '8430603365:AAEtZf6AjhsbQuaHnec5EJwmi-pzGfXITWs')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '1433257992')
+
+# Telegram Notification Settings
+SEND_HOLD_SIGNALS = True  # Kirim HOLD signals ke Telegram untuk testing
+SEND_ALL_SIGNALS = True   # Kirim semua signal (BUY/SELL/EXIT/HOLD)
+TELEGRAM_TEST_MODE = True # Mode testing untuk Telegram
 
 # === Konfigurasi Risk Management ===
 STOP_LOSS_PERCENT = 0.02  # 2% stop loss
