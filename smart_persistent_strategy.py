@@ -7,6 +7,7 @@ import os
 from datetime import datetime
 import ta
 from config import *
+import ccxt  # For easier Binance API access
 
 class SmartTradingStrategy:
     def __init__(self, trading_pairs=None):
@@ -16,6 +17,13 @@ class SmartTradingStrategy:
         
         self.trading_pairs = trading_pairs
         self.base_url = "https://indodax.com/api"
+        
+        # Initialize proxy settings from config
+        self.use_proxy = USE_BINANCE_PROXY if 'USE_BINANCE_PROXY' in globals() else False
+        if self.use_proxy:
+            global BINANCE_PROXY_URL
+            BINANCE_PROXY_URL = globals().get('BINANCE_PROXY_URL', '')
+            print(f"🌐 Proxy initialized from config: {BINANCE_PROXY_URL[:50]}...")
         
         # Data storage untuk setiap pair
         self.price_history = {}  # {pair: [data]}
@@ -29,13 +37,6 @@ class SmartTradingStrategy:
         self.data_tiers = DATA_MANAGEMENT_TIERS
         self.current_tier = 'scalping'  # Default tier
         
-        # Trading state untuk setiap pair
-        self.current_positions = {}  # {pair: "LONG"/"SHORT"/None}
-        self.entry_prices = {}  # {pair: price}
-        self.entry_times = {}  # {pair: time}
-        self.stop_losses = {}  # {pair: price}
-        self.take_profits = {}  # {pair: price}
-        
         # Signal management
         self.last_signal_times = {}  # {pair: time}
         self.signal_counts = {}  # {pair: {"BUY": 0, "SELL": 0, "HOLD": 0}}
@@ -47,6 +48,9 @@ class SmartTradingStrategy:
         self.max_hold_time = MAX_HOLD_TIME
         self.signal_cooldown = SIGNAL_COOLDOWN
         
+        # Position tracking for simulation
+        self.positions = {}  # {pair: {'entry_price': float, 'entry_time': datetime, 'type': 'BUY' or 'SELL'}}
+        
         # Initialize untuk setiap pair
         for pair_config in self.trading_pairs:
             pair = pair_config['pair']
@@ -56,14 +60,10 @@ class SmartTradingStrategy:
             self.last_saved_data[pair] = None
             self.data_cache[pair] = None
             self.archived_data[pair] = []
-            self.current_positions[pair] = None
-            self.entry_prices[pair] = None
-            self.entry_times[pair] = None
-            self.stop_losses[pair] = None
-            self.take_profits[pair] = None
             self.last_signal_times[pair] = None
             self.signal_counts[pair] = {"BUY": 0, "SELL": 0, "HOLD": 0}
             self.consecutive_signals[pair] = 0
+            self.positions[pair] = None  # No position initially
         
         # Load existing data when starting
         self.load_all_historical_data()
@@ -321,55 +321,37 @@ class SmartTradingStrategy:
     
     def check_exit_conditions(self, current_data, pair):
         """Cek kondisi untuk exit dari posisi untuk pair tertentu"""
-        if self.current_positions[pair] is None:
-            return None, "Tidak ada posisi aktif"
+        if self.positions[pair] is None:
+            return None, "No open position"
         
+        position = self.positions[pair]
         current_price = current_data['price']
         current_time = current_data['timestamp']
+        entry_price = position['entry_price']
+        entry_time = position['entry_time']
+        pos_type = position['type']
         
-        # Hitung profit/loss
-        if self.current_positions[pair] == "LONG":
-            profit_loss = ((current_price - self.entry_prices[pair]) / self.entry_prices[pair]) * 100
-        else:  # SHORT
-            profit_loss = ((self.entry_prices[pair] - current_price) / self.entry_prices[pair]) * 100
+        # Time-based exit
+        hold_time = (current_time - entry_time).total_seconds() / 60  # minutes
+        if hold_time > self.max_hold_time:
+            return "EXIT", f"Max hold time reached ({hold_time:.1f} min > {self.max_hold_time} min)"
         
-        exit_signal = None
-        exit_reason = []
+        if pos_type == 'BUY':
+            # Take profit
+            if current_price >= entry_price * (1 + self.take_profit_percent):
+                return "EXIT", f"Take profit hit ({(current_price / entry_price - 1)*100:.1f}% > {self.take_profit_percent*100:.1f}%)"
+            # Stop loss
+            if current_price <= entry_price * (1 - self.stop_loss_percent):
+                return "EXIT", f"Stop loss hit ({(current_price / entry_price - 1)*100:.1f}% < -{self.stop_loss_percent*100:.1f}%)"
+        elif pos_type == 'SELL':
+            # Take profit for SELL (price drops)
+            if current_price <= entry_price * (1 - self.take_profit_percent):
+                return "EXIT", f"Take profit hit ({(entry_price / current_price - 1)*100:.1f}% > {self.take_profit_percent*100:.1f}%)"
+            # Stop loss for SELL (price rises)
+            if current_price >= entry_price * (1 + self.stop_loss_percent):
+                return "EXIT", f"Stop loss hit ({(entry_price / current_price - 1)*100:.1f}% < -{self.stop_loss_percent*100:.1f}%)"
         
-        # 1. Stop Loss
-        if profit_loss <= -self.stop_loss_percent * 100:
-            exit_signal = "SELL" if self.current_positions[pair] == "LONG" else "BUY"
-            exit_reason.append(f"Stop Loss ({profit_loss:.2f}%)")
-        
-        # 2. Take Profit
-        elif profit_loss >= self.take_profit_percent * 100:
-            exit_signal = "SELL" if self.current_positions[pair] == "LONG" else "BUY"
-            exit_reason.append(f"Take Profit ({profit_loss:.2f}%)")
-        
-        # 3. Time-based exit
-        elif self.entry_times[pair]:
-            hold_time = (current_time - self.entry_times[pair]).total_seconds()
-            if hold_time >= self.max_hold_time:
-                exit_signal = "SELL" if self.current_positions[pair] == "LONG" else "BUY"
-                exit_reason.append(f"Time Exit ({hold_time/60:.1f} menit)")
-        
-        # 4. Technical exit signals
-        else:
-            # RSI overbought/oversold untuk exit
-            prices = [p['price'] for p in self.price_history[pair]]
-            rsi_5, rsi_14 = self.calculate_multi_timeframe_rsi(prices)
-            
-            if self.current_positions[pair] == "LONG" and rsi_5 and rsi_14:
-                if rsi_5 > 75 and rsi_14 > 70:
-                    exit_signal = "SELL"
-                    exit_reason.append(f"RSI Overbought (5m:{rsi_5:.1f}, 14m:{rsi_14:.1f})")
-            
-            elif self.current_positions[pair] == "SHORT" and rsi_5 and rsi_14:
-                if rsi_5 < 25 and rsi_14 < 30:
-                    exit_signal = "BUY"
-                    exit_reason.append(f"RSI Oversold (5m:{rsi_5:.1f}, 14m:{rsi_14:.1f})")
-        
-        return exit_signal, ", ".join(exit_reason) if exit_reason else None
+        return None, "Position active"
     
     def check_entry_timing(self, current_data, signal, pair):
         """Cek timing entry yang lebih baik untuk pair tertentu"""
@@ -432,6 +414,62 @@ class SmartTradingStrategy:
         
         return current_price
 
+    def get_bitcoin_sentiment(self):
+        """Get Bitcoin sentiment as market indicator for altcoins"""
+        try:
+            # Get Bitcoin price from Binance
+            btc_data = self.get_binance_price('BTC/USDT')
+            if not btc_data:
+                return None, "No Bitcoin data available"
+            
+            # Get Bitcoin price from Indodax for comparison
+            btc_indodax = self.get_price('btc_idr')
+            if not btc_indodax:
+                return None, "No Bitcoin Indodax data"
+            
+            # Calculate Bitcoin trend
+            btc_price = btc_data['price']
+            btc_high = btc_data['high']
+            btc_low = btc_data['low']
+            
+            # Determine Bitcoin sentiment
+            btc_midpoint = (btc_high + btc_low) / 2
+            btc_position = (btc_price - btc_low) / (btc_high - btc_low) if btc_high != btc_low else 0.5
+            
+            # Bitcoin sentiment classification
+            if btc_position > 0.7:
+                sentiment = "STRONG_BULLISH"
+                sentiment_score = 2
+            elif btc_position > 0.6:
+                sentiment = "BULLISH"
+                sentiment_score = 1
+            elif btc_position < 0.3:
+                sentiment = "STRONG_BEARISH"
+                sentiment_score = -2
+            elif btc_position < 0.4:
+                sentiment = "BEARISH"
+                sentiment_score = -1
+            else:
+                sentiment = "NEUTRAL"
+                sentiment_score = 0
+            
+            # Calculate Bitcoin volatility
+            btc_volatility = (btc_high - btc_low) / btc_midpoint * 100
+            
+            return {
+                'price': btc_price,
+                'high': btc_high,
+                'low': btc_low,
+                'position': btc_position,
+                'sentiment': sentiment,
+                'sentiment_score': sentiment_score,
+                'volatility': btc_volatility,
+                'indodax_price': btc_indodax['price']
+            }, "Bitcoin sentiment analyzed"
+            
+        except Exception as e:
+            return None, f"Error analyzing Bitcoin: {e}"
+
     def generate_signal(self, current_data, pair):
         """Generate sinyal trading dengan konfirmasi ganda dan cooldown untuk pair tertentu"""
         if len(self.price_history[pair]) < MIN_DATA_POINTS:  # Minimal data points dari config
@@ -475,24 +513,67 @@ class SmartTradingStrategy:
         
         signal = "HOLD"
         reason = []
-        signal_strength = 0
+        buy_strength = 0
+        sell_strength = 0
+        
+        # Get Bitcoin sentiment for altcoin trading
+        btc_sentiment, btc_reason = self.get_bitcoin_sentiment()
+        if btc_sentiment and pair != 'btc_idr':  # Skip for Bitcoin itself
+            reason.append(f"BTC: {btc_sentiment['sentiment']} (${btc_sentiment['price']:,.0f})")
+            
+            # Bitcoin sentiment impact on altcoins
+            if btc_sentiment['sentiment_score'] >= 1:  # Bullish Bitcoin
+                buy_strength += btc_sentiment['sentiment_score']
+                reason.append(f"Bitcoin Bullish → Altcoin Favorable")
+            elif btc_sentiment['sentiment_score'] <= -1:  # Bearish Bitcoin
+                sell_strength += abs(btc_sentiment['sentiment_score'])
+                reason.append(f"Bitcoin Bearish → Altcoin Risk")
+            
+            # High Bitcoin volatility = cautious altcoin trading
+            if btc_sentiment['volatility'] > 5.0:  # 5% volatility
+                buy_strength = max(0, buy_strength - 1)
+                sell_strength = max(0, sell_strength - 1)
+                reason.append(f"High BTC Volatility ({btc_sentiment['volatility']:.1f}%) - Cautious")
+        
+        # Add Binance comparison here
+        binance_comp, comp_reason = self.compare_with_binance(current_data, pair)
+        if binance_comp:
+            reason.append(comp_reason)
+            if binance_comp['is_bullish_binance']:
+                buy_strength += 1
+                reason.append("Binance Bullish Reference")
+            elif binance_comp['is_bearish_binance']:
+                sell_strength += 1
+                reason.append("Binance Bearish Reference")
+            
+            # Adjust signal based on price difference - more lenient for scalping
+            price_diff_threshold = 10.0 if SCALPING_MODE else 5.0  # Higher threshold for scalping
+            if abs(binance_comp['price_diff_percent']) > price_diff_threshold:
+                # Don't force HOLD in scalping mode, just reduce strength
+                if SCALPING_MODE:
+                    buy_strength = max(0, buy_strength - 1)
+                    sell_strength = max(0, sell_strength - 1)
+                    reason.append(f"High price difference with Binance ({binance_comp['price_diff_percent']:.2f}%) - reduced strength")
+                else:
+                    signal = "HOLD"
+                    reason.append(f"High price difference with Binance ({binance_comp['price_diff_percent']:.2f}%)")
         
         # 1. Ultra-Short Term RSI Strategy (scalping specific)
         if rsi_3 and rsi_5 and rsi_14:
             # Scalping BUY: RSI 3-period oversold dengan konfirmasi
             if rsi_3 < SCALPING_RSI_3_OVERSOLD and rsi_5 < 30 and rsi_14 < 35:
-                signal_strength += 2  # Higher weight for scalping
+                buy_strength += 2  # Higher weight for scalping
                 reason.append(f"RSI Scalping BUY (3m:{rsi_3:.1f}, 5m:{rsi_5:.1f}, 14m:{rsi_14:.1f})")
             # Scalping SELL: RSI 3-period overbought dengan konfirmasi
             elif rsi_3 > SCALPING_RSI_3_OVERBOUGHT and rsi_5 > 70 and rsi_14 > 65:
-                signal_strength += 2  # Higher weight for scalping
+                sell_strength += 2  # Higher weight for scalping
                 reason.append(f"RSI Scalping SELL (3m:{rsi_3:.1f}, 5m:{rsi_5:.1f}, 14m:{rsi_14:.1f})")
-            # Regular RSI signals
-            elif rsi_5 < 25 and rsi_14 < 30:
-                signal_strength += 1
+            # Regular RSI signals with lower threshold for scalping
+            elif rsi_5 < 30 and rsi_14 < 35:  # More aggressive than 25/30
+                buy_strength += 1
                 reason.append(f"RSI oversold (5m:{rsi_5:.1f}, 14m:{rsi_14:.1f})")
-            elif rsi_5 > 75 and rsi_14 > 70:
-                signal_strength += 1
+            elif rsi_5 > 70 and rsi_14 > 65:  # More aggressive than 75/70
+                sell_strength += 1
                 reason.append(f"RSI overbought (5m:{rsi_5:.1f}, 14m:{rsi_14:.1f})")
         
         # 2. Moving Average Strategy (dengan trend confirmation)
@@ -503,84 +584,104 @@ class SmartTradingStrategy:
             # MA Crossover dengan konfirmasi trend
             if (sma_5 > sma_10 > sma_20 and is_bullish and 
                 prices[-2] <= sma_10 and prices[-1] > sma_10):
-                signal_strength += 2  # Bobot lebih tinggi
+                buy_strength += 2  # Bobot lebih tinggi
                 reason.append("MA Crossover Bullish (Trend Confirmed)")
             elif (sma_5 < sma_10 < sma_20 and is_bearish and 
                   prices[-2] >= sma_10 and prices[-1] < sma_10):
-                signal_strength += 2  # Bobot lebih tinggi
+                sell_strength += 2  # Bobot lebih tinggi
                 reason.append("MA Crossover Bearish (Trend Confirmed)")
+            
+            # Scalping-specific: Quick MA signals
+            elif SCALPING_MODE:
+                if prices[-1] > sma_5 and sma_5 > sma_10:
+                    buy_strength += 1
+                    reason.append("Quick MA Bullish (Scalping)")
+                elif prices[-1] < sma_5 and sma_5 < sma_10:
+                    sell_strength += 1
+                    reason.append("Quick MA Bearish (Scalping)")
         
         # 3. Order Book Pressure Analysis
         if orderbook_ratio > 1.2:  # Buy pressure lebih besar 1.2x
-            signal_strength += 1
+            buy_strength += 1
             reason.append(f"Orderbook Buy Pressure ({orderbook_ratio:.2f}x)")
         elif orderbook_ratio < 0.8:  # Sell pressure lebih besar
-            signal_strength += 1
+            sell_strength += 1
             reason.append(f"Orderbook Sell Pressure ({orderbook_ratio:.2f}x)")
         
         # 4. Momentum-Based Scalping Signals
         if roc_3 and roc_5 and momentum_10:
             # Strong momentum BUY signals
             if roc_3 > SCALPING_MOMENTUM_ROC3_THRESHOLD and roc_5 > 0.5 and momentum_10 > 0:
-                signal_strength += 2
+                buy_strength += 2
                 reason.append(f"Momentum BUY (ROC3:{roc_3:.2f}%, ROC5:{roc_5:.2f}%)")
             # Strong momentum SELL signals
             elif roc_3 < -SCALPING_MOMENTUM_ROC3_THRESHOLD and roc_5 < -0.5 and momentum_10 < 0:
-                signal_strength += 2
+                sell_strength += 2
                 reason.append(f"Momentum SELL (ROC3:{roc_3:.2f}%, ROC5:{roc_5:.2f}%)")
         
         # 5. Volatility-Based Scalping Signals
         if atr_14 and cv:
             # Low volatility = good for scalping
             if cv < SCALPING_VOLATILITY_CV_LOW:  # Low volatility
-                signal_strength += 1
+                buy_strength += 1  # Netral, tapi tambah ke kedua strength
+                sell_strength += 1
                 reason.append(f"Low Volatility (CV:{cv:.2f}%)")
             # High volatility = avoid scalping
             elif cv > SCALPING_VOLATILITY_CV_HIGH:
-                signal_strength = 0
+                buy_strength = 0
+                sell_strength = 0
                 reason.append(f"High Volatility (CV:{cv:.2f}%)")
         
         # 6. Trade Dominance Analysis
         if buy_ratio > 0.7:  # 70% transaksi adalah BUY
-            signal_strength += 1
+            buy_strength += 1
             reason.append(f"Trade Dominance BUY ({buy_ratio*100:.1f}%)")
         elif sell_ratio > 0.7:  # 70% transaksi adalah SELL
-            signal_strength += 1
+            sell_strength += 1
             reason.append(f"Trade Dominance SELL ({sell_ratio*100:.1f}%)")
         
-        # 5. Volume confirmation (wajib dengan threshold lebih tinggi)
-        if volume_ratio < VOLUME_THRESHOLD:  # Threshold dari config
-            signal_strength = 0
-            reason.append(f"Volume rendah ({volume_ratio:.2f}x rata-rata)")
+        # 5. Volume confirmation (lebih lenient untuk scalping)
+        volume_threshold = VOLUME_THRESHOLD * 0.8 if SCALPING_MODE else VOLUME_THRESHOLD  # 80% of normal threshold
+        if volume_ratio < volume_threshold:
+            buy_strength = 0
+            sell_strength = 0
+            reason.append(f"Volume rendah ({volume_ratio:.2f}x rata-rata, min:{volume_threshold:.2f}x)")
         
         # 6. Volatility filter (hindari signal saat terlalu volatile)
-        if volatility > VOLATILITY_THRESHOLD:  # Threshold dari config
-            signal_strength = 0
-            reason.append(f"Volatilitas tinggi ({volatility*100:.1f}%)")
+        volatility_threshold = VOLATILITY_THRESHOLD * 1.2 if SCALPING_MODE else VOLATILITY_THRESHOLD  # More tolerant in scalping
+        if volatility > volatility_threshold:
+            buy_strength = 0
+            sell_strength = 0
+            reason.append(f"Volatilitas tinggi ({volatility*100:.1f}%, max:{volatility_threshold*100:.1f}%)")
         
         # 7. Cooldown check (scalping mode uses shorter cooldown)
         cooldown_time = SCALPING_COOLDOWN if SCALPING_MODE else self.signal_cooldown
         if self.last_signal_times[pair]:
             time_since_last = (current_data['timestamp'] - self.last_signal_times[pair]).total_seconds()
-            if time_since_last < cooldown_time and signal_strength > 0:
+            if time_since_last < cooldown_time and (buy_strength > 0 or sell_strength > 0):
                 remaining_cooldown = cooldown_time - time_since_last
-                signal_strength = 0
+                buy_strength = 0
+                sell_strength = 0
                 reason.append(f"Cooldown ({remaining_cooldown:.0f}s tersisa)")
         
         # 8. Consecutive signal protection
         if self.consecutive_signals[pair] >= 3:  # Maksimal 3 signal berturut-turut
-            signal_strength = 0
+            buy_strength = 0
+            sell_strength = 0
             reason.append(f"Terlalu banyak signal berturut-turut ({self.consecutive_signals[pair]})")
         
-        # 9. Generate final signal berdasarkan strength
+        # 9. Detect signal conflict
         min_strength = SCALPING_MIN_SIGNAL_STRENGTH if SCALPING_MODE else MIN_SIGNAL_STRENGTH
-        if signal_strength >= min_strength:  # Minimal strength dari config
-            if ("Bullish" in str(reason) or "Buy Pressure" in str(reason) or 
-                ("oversold" in str(reason) and signal_strength >= min_strength)):
-                signal = "BUY"
-            elif ("Bearish" in str(reason) or "Sell Pressure" in str(reason) or 
-                  ("overbought" in str(reason) and signal_strength >= min_strength)):
-                signal = "SELL"
+        if buy_strength >= min_strength and sell_strength >= min_strength:
+            # Conflict detected: fallback to HOLD
+            signal = "HOLD"
+            reason.append("Signal conflict detected (BUY and SELL factors present)")
+        elif buy_strength >= min_strength:
+            signal = "BUY"
+        elif sell_strength >= min_strength:
+            signal = "SELL"
+        else:
+            signal = "HOLD"
         
         # 10. Entry timing check
         if signal != "HOLD":
@@ -771,125 +872,166 @@ class SmartTradingStrategy:
         """Execute trade berdasarkan signal untuk pair tertentu"""
         current_price = current_data['price']
         current_time = current_data['timestamp']
+        pair_config = self.get_pair_config(pair)  # Assume this exists
+        
+        # Handle EXIT first
+        if signal.startswith('EXIT'):
+            print(f"🔄 EXIT POSITION for {pair_config['display_name']}")
+            print(f"   Reason: {reason}")
+            print(f"   Current Price: Rp {current_price:,.6f}")
+            # Close position
+            self.positions[pair] = None
+        
+        # Handle new signals only if no open position or after exit
+        if self.positions[pair] is None:
+            if signal == "BUY":
+                entry_price = self.calculate_better_entry_price(current_data, "BUY", pair)
+                self.positions[pair] = {
+                    'entry_price': entry_price,
+                    'entry_time': current_time,
+                    'type': 'BUY'
+                }
+                print(f"🟢 ENTER BUY at Rp {entry_price:,.6f}")
+            elif signal == "SELL":
+                entry_price = self.calculate_better_entry_price(current_data, "SELL", pair)
+                self.positions[pair] = {
+                    'entry_price': entry_price,
+                    'entry_time': current_time,
+                    'type': 'SELL'
+                }
+                print(f"🔴 ENTER SELL at Rp {entry_price:,.6f}")
+        else:
+            print(f"📌 Existing position: {self.positions[pair]['type']} at Rp {self.positions[pair]['entry_price']:,.6f}")
         
         # === Kirim signal ke Telegram ===
-        # Kirim semua signal jika SEND_ALL_SIGNALS = True, atau hanya BUY/SELL/EXIT jika False
-        should_send_telegram = (SEND_ALL_SIGNALS and signal in ("BUY", "SELL", "EXIT", "HOLD")) or (not SEND_ALL_SIGNALS and signal in ("BUY", "SELL", "EXIT"))
+        # Logic untuk menentukan apakah kirim ke Telegram
+        should_send_telegram = False
+        
+        # Jika SEND_ALL_SIGNALS = True, kirim semua signal (termasuk HOLD jika SEND_HOLD_SIGNALS = True)
+        if SEND_ALL_SIGNALS:
+            if signal in ("BUY", "SELL", "EXIT"):
+                should_send_telegram = True
+            elif signal == "HOLD" and SEND_HOLD_SIGNALS:
+                should_send_telegram = True
+        # Jika SEND_ALL_SIGNALS = False, hanya kirim BUY/SELL/EXIT
+        else:
+            if signal in ("BUY", "SELL", "EXIT"):
+                should_send_telegram = True
         
         if should_send_telegram:
             additional_info = {}
             
-            if signal == "BUY" and self.current_positions[pair] != "LONG":
-                # Close SHORT position if exists
-                if self.current_positions[pair] == "SHORT":
-                    profit_loss = ((self.entry_prices[pair] - current_price) / self.entry_prices[pair]) * 100
-                    print(f"🔄 CLOSE SHORT {pair}: Profit/Loss {profit_loss:+.2f}%")
-                    additional_info["Close SHORT P/L"] = f"{profit_loss:+.2f}%"
-                
-                # Calculate better entry price
-                entry_price = self.calculate_better_entry_price(current_data, "BUY", pair)
-                
-                # Open LONG position
-                self.current_positions[pair] = "LONG"
-                self.entry_prices[pair] = entry_price
-                self.entry_times[pair] = current_time
-                self.stop_losses[pair] = entry_price * (1 - self.stop_loss_percent)
-                self.take_profits[pair] = entry_price * (1 + self.take_profit_percent)
-                
-                # Tambahkan info posisi
-                additional_info["Entry Price"] = f"Rp {entry_price:,.6f}"
-                additional_info["Stop Loss"] = f"Rp {self.stop_losses[pair]:,.6f} (-{self.stop_loss_percent*100:.1f}%)"
-                additional_info["Take Profit"] = f"Rp {self.take_profits[pair]:,.6f} (+{self.take_profit_percent*100:.1f}%)"
-                additional_info["Position"] = "LONG"
-                
-                print(f"🟢 ENTRY LONG {pair}: Rp {entry_price:.6f} (Market: Rp {current_price:.6f})")
-                print(f"   Stop Loss: Rp {self.stop_losses[pair]:.6f} (-{self.stop_loss_percent*100:.1f}%)")
-                print(f"   Take Profit: Rp {self.take_profits[pair]:.6f} (+{self.take_profit_percent*100:.1f}%)")
-                
-            elif signal == "SELL" and self.current_positions[pair] != "SHORT":
-                # Close LONG position if exists
-                if self.current_positions[pair] == "LONG":
-                    profit_loss = ((current_price - self.entry_prices[pair]) / self.entry_prices[pair]) * 100
-                    print(f" CLOSE LONG {pair}: Profit/Loss {profit_loss:+.2f}%")
-                    additional_info["Close LONG P/L"] = f"{profit_loss:+.2f}%"
-                
-                # Calculate better entry price
-                entry_price = self.calculate_better_entry_price(current_data, "SELL", pair)
-                
-                # Open SHORT position
-                self.current_positions[pair] = "SHORT"
-                self.entry_prices[pair] = entry_price
-                self.entry_times[pair] = current_time
-                self.stop_losses[pair] = entry_price * (1 + self.stop_loss_percent)
-                self.take_profits[pair] = entry_price * (1 - self.take_profit_percent)
-                
-                # Tambahkan info posisi
-                additional_info["Entry Price"] = f"Rp {entry_price:,.6f}"
-                additional_info["Stop Loss"] = f"Rp {self.stop_losses[pair]:,.6f} (+{self.stop_loss_percent*100:.1f}%)"
-                additional_info["Take Profit"] = f"Rp {self.take_profits[pair]:,.6f} (-{self.take_profit_percent*100:.1f}%)"
-                additional_info["Position"] = "SHORT"
-                
-                print(f"🔴 ENTRY SHORT {pair}: Rp {entry_price:.6f} (Market: Rp {current_price:.6f})")
-                print(f"   Stop Loss: Rp {self.stop_losses[pair]:.6f} (+{self.stop_loss_percent*100:.1f}%)")
-                print(f"   Take Profit: Rp {self.take_profits[pair]:.6f} (-{self.take_profit_percent*100:.1f}%)")
+            # Get Binance comparison data for Telegram
+            binance_comp, binance_reason = self.compare_with_binance(current_data, pair)
             
-            elif signal.startswith("EXIT"):
-                # Close current position
-                if self.current_positions[pair] == "LONG":
-                    profit_loss = ((current_price - self.entry_prices[pair]) / self.entry_prices[pair]) * 100
-                    print(f"🔄 EXIT LONG {pair}: Profit/Loss {profit_loss:+.2f}%")
-                    additional_info["Position"] = "LONG"
-                    additional_info["Entry Price"] = f"Rp {self.entry_prices[pair]:,.6f}"
-                    additional_info["Exit Price"] = f"Rp {current_price:,.6f}"
-                    additional_info["Profit/Loss"] = f"{profit_loss:+.2f}%"
-                    
-                    # Tambahkan emoji berdasarkan profit/loss
-                    if profit_loss > 0:
-                        additional_info["Status"] = "✅ PROFIT"
-                    elif profit_loss < 0:
-                        additional_info["Status"] = "❌ LOSS"
-                    else:
-                        additional_info["Status"] = "➖ BREAKEVEN"
-                        
-                elif self.current_positions[pair] == "SHORT":
-                    profit_loss = ((self.entry_prices[pair] - current_price) / self.entry_prices[pair]) * 100
-                    print(f" EXIT SHORT {pair}: Profit/Loss {profit_loss:+.2f}%")
-                    additional_info["Position"] = "SHORT"
-                    additional_info["Entry Price"] = f"Rp {self.entry_prices[pair]:,.6f}"
-                    additional_info["Exit Price"] = f"Rp {current_price:,.6f}"
-                    additional_info["Profit/Loss"] = f"{profit_loss:+.2f}%"
-                    
-                    # Tambahkan emoji berdasarkan profit/loss
-                    if profit_loss > 0:
-                        additional_info["Status"] = "✅ PROFIT"
-                    elif profit_loss < 0:
-                        additional_info["Status"] = "❌ LOSS"
-                    else:
-                        additional_info["Status"] = "➖ BREAKEVEN"
-                
-                # Reset position
-                self.current_positions[pair] = None
-                self.entry_prices[pair] = None
-                self.entry_times[pair] = None
-                self.stop_losses[pair] = None
-                self.take_profits[pair] = None
-            
-            # Handle HOLD signal
-            elif signal == "HOLD":
-                # Tambahkan info untuk HOLD signal
+            # For HOLD signal, just show current price and reason
+            if signal == "HOLD":
                 additional_info["Status"] = "⏸️ HOLDING"
                 additional_info["Reason"] = reason
-                if self.current_positions[pair]:
-                    additional_info["Current Position"] = self.current_positions[pair]
-                    if self.entry_prices[pair]:
-                        current_price = current_data['price']
-                        if self.current_positions[pair] == "LONG":
-                            profit_loss = ((current_price - self.entry_prices[pair]) / self.entry_prices[pair]) * 100
-                        else:  # SHORT
-                            profit_loss = ((self.entry_prices[pair] - current_price) / self.entry_prices[pair]) * 100
-                        additional_info["Current P/L"] = f"{profit_loss:+.2f}%"
+                additional_info["Current Price"] = f"Rp {current_price:,.6f}"
+                additional_info["Current Time"] = current_time.strftime('%H:%M:%S')
+                
+                print(f"⚪ SIGNAL: HOLD | Tidak ada perubahan signifikan")
+                print(f"   Alasan: {reason}")
+                print(f"   Harga: Rp {current_price:,.6f}")
+                print(f"   Waktu: {current_time.strftime('%H:%M:%S')}")
+            
+            # For BUY/SELL signals, calculate better entry price and show
+            elif signal == "BUY":
+                entry_price = self.calculate_better_entry_price(current_data, "BUY", pair)
+                # Calculate predicted sell price
+                predicted_sell_price = entry_price * (1 + self.take_profit_percent)
+                stop_loss_price = entry_price * (1 - self.stop_loss_percent)
+                additional_info["Entry Price"] = f"Rp {entry_price:,.6f}"
+                additional_info["Predicted Sell"] = f"Rp {predicted_sell_price:,.6f} (Take Profit {self.take_profit_percent*100:.1f}% )"
+                additional_info["Stop Loss"] = f"Rp {stop_loss_price:,.6f} ({self.stop_loss_percent*100:.1f}% )"
+                additional_info["Reason"] = reason
+                additional_info["Current Price"] = f"Rp {current_price:,.6f}"
+                additional_info["Current Time"] = current_time.strftime('%H:%M:%S')
+                
+                print(f"🟢 SIGNAL: BELI {pair_config['name']}!")
+                print(f"   Alasan: {reason}")
+                print(f"   Harga: Rp {current_price:,.6f}")
+                print(f"   Waktu: {current_time.strftime('%H:%M:%S')}")
+                print(f"   Entry Price: Rp {entry_price:,.6f}")
+                print(f"   Predicted Sell: Rp {predicted_sell_price:,.6f} (TP {self.take_profit_percent*100:.1f}% )")
+                print(f"   Stop Loss: Rp {stop_loss_price:,.6f} (SL {self.stop_loss_percent*100:.1f}% )")
+            
+            elif signal == "SELL":
+                entry_price = self.calculate_better_entry_price(current_data, "SELL", pair)
+                # Calculate predicted buy-back price (assuming rebound)
+                predicted_buy_back = entry_price * (1 - self.take_profit_percent)  # Symmetric for spot
+                stop_loss_price = entry_price * (1 + self.stop_loss_percent)  # For SELL, SL if price rises
+                additional_info["Entry Price"] = f"Rp {entry_price:,.6f}"
+                additional_info["Predicted Buy Back"] = f"Rp {predicted_buy_back:,.6f} (Target Rebound {self.take_profit_percent*100:.1f}% )"
+                additional_info["Stop Loss"] = f"Rp {stop_loss_price:,.6f} ({self.stop_loss_percent*100:.1f}% )"
+                additional_info["Reason"] = reason
+                additional_info["Current Price"] = f"Rp {current_price:,.6f}"
+                additional_info["Current Time"] = current_time.strftime('%H:%M:%S')
+                
+                print(f"🔴 SIGNAL: JUAL {pair_config['name']}!")
+                print(f"   Alasan: {reason}")
+                print(f"   Harga: Rp {current_price:,.6f}")
+                print(f"   Waktu: {current_time.strftime('%H:%M:%S')}")
+                print(f"   Entry Price: Rp {entry_price:,.6f}")
+                print(f"   Predicted Buy Back: Rp {predicted_buy_back:,.6f} (Target {self.take_profit_percent*100:.1f}% )")
+                print(f"   Stop Loss: Rp {stop_loss_price:,.6f} (SL {self.stop_loss_percent*100:.1f}% )")
+            
+            # For EXIT signals, just show current price and reason
+            elif signal.startswith("EXIT"):
+                additional_info["Reason"] = reason
+                additional_info["Current Price"] = f"Rp {current_price:,.6f}"
+                additional_info["Current Time"] = current_time.strftime('%H:%M:%S')
+                
+                print(f"🔄 SIGNAL: {signal}")
+                print(f"   Alasan: {reason}")
+                print(f"   Harga: Rp {current_price:,.6f}")
+                print(f"   Waktu: {current_time.strftime('%H:%M:%S')}")
+            
+            # Add position status
+            if self.positions[pair]:
+                pos = self.positions[pair]
+                additional_info["Position"] = f"{pos['type']} at Rp {pos['entry_price']:,.6f} since {pos['entry_time'].strftime('%H:%M:%S')}"
+            else:
+                additional_info["Position"] = "No open position"
+            
+            # Add Binance comparison data to Telegram message
+            if binance_comp:
+                # Convert USD to IDR for better comparison
+                usd_to_idr_rate = 16359  # Same rate used in comparison
+                binance_price_idr = binance_comp['binance_price_usd'] * usd_to_idr_rate
+                
+                additional_info["Binance USD"] = f"${binance_comp['binance_price_usd']:,.6f}"
+                additional_info["Binance IDR"] = f"Rp {binance_price_idr:,.0f}"
+                additional_info["Price Difference"] = f"{binance_comp['price_diff_percent']:+.2f}% vs Binance"
+                additional_info["Volume Ratio"] = f"{binance_comp['volume_ratio']:.2f}x"
+                
+                # Binance trend
+                if binance_comp['is_bullish_binance']:
+                    additional_info["Binance Trend"] = "🟢 Bullish"
+                elif binance_comp['is_bearish_binance']:
+                    additional_info["Binance Trend"] = "🔴 Bearish"
                 else:
-                    additional_info["Current Position"] = "No Position"
+                    additional_info["Binance Trend"] = "⚪ Neutral"
+            else:
+                additional_info["Binance Status"] = "❌ Connection failed"
+            
+            # Add Bitcoin sentiment for altcoin signals
+            if pair != 'btc_idr':  # Don't show for Bitcoin itself
+                btc_sentiment, _ = self.get_bitcoin_sentiment()
+                if btc_sentiment:
+                    additional_info["Bitcoin Sentiment"] = f"{btc_sentiment['sentiment']} (${btc_sentiment['price']:,.0f})"
+                    additional_info["Bitcoin Volatility"] = f"{btc_sentiment['volatility']:.1f}%"
+                    
+                    # Bitcoin impact on altcoin
+                    if btc_sentiment['sentiment_score'] >= 1:
+                        additional_info["Market Condition"] = "🟢 Bitcoin Bullish → Altcoin Favorable"
+                    elif btc_sentiment['sentiment_score'] <= -1:
+                        additional_info["Market Condition"] = "🔴 Bitcoin Bearish → Altcoin Risk"
+                    else:
+                        additional_info["Market Condition"] = "⚪ Bitcoin Neutral → Normal Trading"
+                else:
+                    additional_info["Bitcoin Status"] = "❌ Bitcoin data unavailable"
             
             # Kirim pesan Telegram
             telegram_msg = self.create_telegram_message(signal, current_data, reason, pair, additional_info)
@@ -931,22 +1073,8 @@ class SmartTradingStrategy:
                     print(f"   BUY signals: {self.signal_counts[pair]['BUY']} ({self.signal_counts[pair]['BUY']/total_signals*100:.1f}%)")
                     print(f"   SELL signals: {self.signal_counts[pair]['SELL']} ({self.signal_counts[pair]['SELL']/total_signals*100:.1f}%)")
                     print(f"   HOLD signals: {self.signal_counts[pair]['HOLD']} ({self.signal_counts[pair]['HOLD']/total_signals*100:.1f}%)")
-                
-                # Current position
-                if self.current_positions[pair]:
-                    print(f"   Posisi saat ini: {self.current_positions[pair]}")
-                    if self.entry_prices[pair]:
-                        current_price = prices[-1] if prices else 0
-                        if self.current_positions[pair] == "LONG":
-                            profit_loss = ((current_price - self.entry_prices[pair]) / self.entry_prices[pair]) * 100
-                        else:
-                            profit_loss = ((self.entry_prices[pair] - current_price) / self.entry_prices[pair]) * 100
-                        print(f"   P/L: {profit_loss:+.2f}%")
-                else:
-                    print(f"   Posisi saat ini: Tidak ada posisi aktif")
             else:
                 print(f"   Perubahan harga: Data tidak cukup")
-                print(f"   Posisi saat ini: Tidak ada posisi aktif")
         
         # Trading parameters
         print(f"\n💰 PARAMETER TRADING:")
@@ -964,11 +1092,27 @@ class SmartTradingStrategy:
         print("Monitoring multiple pairs dengan Order Book + Trade Dominance analysis...")
         print("=" * 80)
         
+        # Show proxy status
+        if hasattr(self, 'use_proxy') and self.use_proxy:
+            proxy_url = BINANCE_PROXY_URL if 'BINANCE_PROXY_URL' in globals() else "Not configured"
+            print(f"🌐 Binance Proxy: Enabled ({proxy_url})")
+        else:
+            print(f"🌐 Binance Proxy: Disabled")
+        
         # Show enabled pairs
         enabled_pairs = [p for p in self.trading_pairs if p['enabled']]
         print(f"\n📈 Monitoring {len(enabled_pairs)} pairs:")
         for pair in enabled_pairs:
             print(f"   {pair['emoji']} {pair['display_name']}")
+        
+        # Test Binance connection
+        print(f"\n🧪 Testing Binance connection...")
+        test_data = self.get_binance_price('BTC/USDT')
+        if test_data:
+            print(f"✅ Binance connection OK - BTC/USDT: ${test_data['price']:,.2f}")
+        else:
+            print(f"❌ Binance connection failed. Comparison will be skipped.")
+            print(f"💡 Tip: Try enabling proxy with bot.configure_proxy('your_proxy_url')")
         
         # Show initial statistics
         self.show_statistics()
@@ -1013,6 +1157,11 @@ class SmartTradingStrategy:
                         # Generate signal
                         signal, reason = self.generate_signal(current_data, pair)
                         
+                        # Add Binance comparison print
+                        binance_comp, _ = self.compare_with_binance(current_data, pair)
+                        if binance_comp:
+                            print(f"   Binance Comparison: Price Diff {binance_comp['price_diff_percent']:.2f}%, Volume Ratio {binance_comp['volume_ratio']:.2f}")
+                        
                         # Execute trade
                         self.execute_trade(signal, current_data, reason, pair)
                         
@@ -1027,9 +1176,6 @@ class SmartTradingStrategy:
                             elif signal == "SELL":
                                 print(f"🔴 SIGNAL: JUAL {pair_config['name']}!")
                                 print(f"   Alasan: {reason}")
-                            elif signal.startswith("EXIT"):
-                                print(f"🔄 SIGNAL: {signal}")
-                                print(f"   Alasan: {reason}")
                             else:
                                 print(f"⚪ SIGNAL: HOLD")
                                 print(f"   Alasan: {reason}")
@@ -1037,16 +1183,6 @@ class SmartTradingStrategy:
                             self.previous_signals[pair] = signal
                         else:
                             print(f"   Signal: {signal} | {reason}")
-                            
-                            # Show current position info
-                            if self.current_positions[pair]:
-                                current_price = current_data['price']
-                                if self.current_positions[pair] == "LONG":
-                                    profit_loss = ((current_price - self.entry_prices[pair]) / self.entry_prices[pair]) * 100
-                                else:  # SHORT
-                                    profit_loss = ((self.entry_prices[pair] - current_price) / self.entry_prices[pair]) * 100
-                                
-                                print(f"   📊 Posisi: {self.current_positions[pair]} | P/L: {profit_loss:+.2f}%")
                     else:
                         # No significant change, just show current status
                         timestamp = current_data['timestamp'].strftime('%H:%M:%S')
@@ -1417,6 +1553,124 @@ class SmartTradingStrategy:
             print(f"   📦 Archiving working: {total_archived_data:,} points archived")
         
         print(f"   💾 Consider switching tiers based on your trading strategy")
+
+    def get_binance_price(self, symbol='BTC/USDT'):
+        """Fetch price data from Binance public API with proxy support"""
+        try:
+            # Method 1: Try ccxt with proxy if configured
+            if hasattr(self, 'use_proxy') and self.use_proxy:
+                proxies = {
+                    'http': BINANCE_PROXY_URL if 'BINANCE_PROXY_URL' in globals() else None,
+                    'https': BINANCE_PROXY_URL if 'BINANCE_PROXY_URL' in globals() else None
+                }
+                binance = ccxt.binance({'proxies': proxies})
+            else:
+                binance = ccxt.binance()
+            
+            ticker = binance.fetch_ticker(symbol)
+            return {
+                'timestamp': datetime.fromtimestamp(ticker['timestamp'] / 1000),
+                'price': float(ticker['last']),
+                'high': float(ticker['high']),
+                'low': float(ticker['low']),
+                'volume': float(ticker['baseVolume'])
+            }
+        except Exception as e:
+            print(f"CCXT method failed: {e}")
+            # Method 2: Fallback to direct requests
+            return self.get_binance_price_fallback(symbol)
+    
+    def get_binance_price_fallback(self, symbol='BTC/USDT'):
+        """Fallback method using direct requests to Binance API"""
+        try:
+            # Convert symbol format (BTC/USDT -> BTCUSDT)
+            binance_symbol = symbol.replace('/', '')
+            
+            # Setup proxy if configured
+            proxies = {}
+            if hasattr(self, 'use_proxy') and self.use_proxy:
+                if 'BINANCE_PROXY_URL' in globals() and BINANCE_PROXY_URL:
+                    proxies = {
+                        'http': BINANCE_PROXY_URL,
+                        'https': BINANCE_PROXY_URL
+                    }
+            
+            # Use Binance public API directly
+            url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={binance_symbol}"
+            
+            response = requests.get(url, proxies=proxies, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                return {
+                    'timestamp': datetime.now(),
+                    'price': float(data['lastPrice']),
+                    'high': float(data['highPrice']),
+                    'low': float(data['lowPrice']),
+                    'volume': float(data['volume'])
+                }
+            else:
+                print(f"Binance API returned status {response.status_code}: {response.text}")
+                return None
+                
+        except requests.exceptions.ProxyError:
+            print(f"Proxy error when accessing Binance. Check proxy configuration.")
+            return None
+        except requests.exceptions.Timeout:
+            print(f"Timeout when accessing Binance API. Check internet connection.")
+            return None
+        except requests.exceptions.ConnectionError:
+            print(f"Connection error to Binance. Binance might be blocked in your region.")
+            return None
+        except Exception as e:
+            print(f"Fallback method also failed: {e}")
+            return None
+
+    def configure_proxy(self, proxy_url=None, enable=True):
+        """Configure proxy for Binance access"""
+        self.use_proxy = enable
+        if proxy_url:
+            global BINANCE_PROXY_URL
+            BINANCE_PROXY_URL = proxy_url
+            print(f"✅ Proxy configured: {proxy_url}")
+        elif enable:
+            print("⚠️ Proxy enabled but no URL provided. Set BINANCE_PROXY_URL in config.")
+        else:
+            print("❌ Proxy disabled for Binance")
+
+    def compare_with_binance(self, indodax_data, pair):
+        """Compare Indodax data with Binance"""
+        # Map Indodax pair to Binance symbol - Updated to match all enabled pairs
+        symbol_map = {
+            'btc_idr': 'BTC/USDT',
+            'xrp_idr': 'XRP/USDT',
+            'sol_idr': 'SOL/USDT',
+            'doge_idr': 'DOGE/USDT',
+            'pepe_idr': 'PEPE/USDT',
+            'moodeng_idr': 'MOODENG/USDT',  # Note: Check if available on Binance
+            'sui_idr': 'SUI/USDT',
+            'eth_idr': 'ETH/USDT',  # Backup for if enabled later
+        }
+        binance_symbol = symbol_map.get(pair, 'BTC/USDT')  # Default to BTC/USDT
+        
+        binance_data = self.get_binance_price(binance_symbol)
+        if not binance_data:
+            return None, f"Failed to get Binance data for {binance_symbol}"
+        
+        # Convert Binance USDT price to approximate IDR for comparison
+        # Updated rate to match Telegram message
+        usd_to_idr_rate = 16359  # Updated rate
+        binance_price_idr = binance_data['price'] * usd_to_idr_rate
+        
+        comparison = {
+            'price_diff_percent': ((indodax_data['price'] - binance_price_idr) / binance_price_idr) * 100,
+            'volume_ratio': indodax_data['volume'] / binance_data['volume'] if binance_data['volume'] > 0 else 0,
+            'is_bullish_binance': binance_data['price'] > (binance_data['high'] + binance_data['low']) / 2,
+            'is_bearish_binance': binance_data['price'] < (binance_data['high'] + binance_data['low']) / 2,
+            'binance_price_usd': binance_data['price'],
+            'binance_price_idr_est': binance_price_idr
+        }
+        
+        return comparison, f"Compared with Binance {binance_symbol} (USD rate: {usd_to_idr_rate})"
 
 if __name__ == "__main__":
     # Buat bot dengan semua pairs yang enabled
