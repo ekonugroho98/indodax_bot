@@ -158,10 +158,10 @@ VOLATILITY_THRESHOLD = 0.02  # 2% volatility threshold
 # Data Management Tiers untuk berbagai jenis analisis
 DATA_MANAGEMENT_TIERS = {
     'scalping': {
-        'max_points': 2000,      # 2-3 jam data untuk scalping real-time
+        'max_points': 2000,      # 2,000 data points untuk scalping (optimal untuk real-time)
         'min_points': 100,       # Minimal untuk scalping
         'interval': 5,           # 5 detik interval
-        'purpose': 'Real-time scalping signals'
+        'purpose': 'Real-time scalping signals (2-3 hours data)'
     },
     'swing': {
         'max_points': 10000,     # 1-2 hari data untuk swing trading
@@ -235,7 +235,7 @@ USE_BINANCE_PROXY = False
 # 'http://127.0.0.1:1080'  # SOCKS proxy
 # 'http://proxy.example.com:8080'  # HTTP proxy
 # 'http://user:pass@proxy.example.com:8080'  # Authenticated proxy
-BINANCE_PROXY_URL = 'http://23673857ee9ee25b9423__cr:746b6cd758b190ee@gw.dataimpulse.com:823'
+BINANCE_PROXY_URL = ''
 
 # Alternative proxy providers (uncomment if needed)
 # Free proxy examples (not recommended for production):

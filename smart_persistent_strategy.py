@@ -804,6 +804,14 @@ class SmartTradingStrategy:
         current_time = current_data['timestamp']
         pair_config = self.get_pair_config(pair)
         
+        # Get current strategy info
+        current_tier = self.get_current_tier_settings()
+        strategy_emoji = {
+            'scalping': '⚡',
+            'swing': '🌊', 
+            'position': '📊'
+        }.get(self.current_tier, '📈')
+        
         # Emoji dan warna berdasarkan signal
         if signal_type == "BUY":
             emoji = "🟢"
@@ -822,8 +830,9 @@ class SmartTradingStrategy:
             signal_text = f"HOLD {pair_config['name']}"
             color = "⚪"
         
-        # Header dengan emoji
+        # Header dengan emoji dan strategy
         message = f"{emoji} <b>MULTI-PAIR TRADING BOT</b> {emoji}\n"
+        message += f"{strategy_emoji} <b>Strategy: {self.current_tier.upper()}</b> {strategy_emoji}\n"
         message += f"{'='*40}\n\n"
         
         # Pair info
@@ -863,7 +872,7 @@ class SmartTradingStrategy:
         
         # Footer
         message += f"{'='*40}\n"
-        message += f"🤖 <i>Multi-Pair Trading Bot v2.0</i>\n"
+        message += f"🤖 <i>Multi-Pair Trading Bot v2.0 - {self.current_tier.title()} Mode</i>\n"
         message += f"📱 <i>Powered by AI & Technical Analysis</i>"
         
         return message
@@ -1091,6 +1100,9 @@ class SmartTradingStrategy:
         print("=" * 80)
         print("Monitoring multiple pairs dengan Order Book + Trade Dominance analysis...")
         print("=" * 80)
+        
+        # Show current strategy
+        self.show_strategy_info()
         
         # Show proxy status
         if hasattr(self, 'use_proxy') and self.use_proxy:
@@ -1671,6 +1683,61 @@ class SmartTradingStrategy:
         }
         
         return comparison, f"Compared with Binance {binance_symbol} (USD rate: {usd_to_idr_rate})"
+
+    def switch_trading_strategy(self, strategy_name):
+        """Switch ke strategy trading yang berbeda"""
+        if strategy_name in self.data_tiers:
+            self.current_tier = strategy_name
+            tier_settings = self.data_tiers[strategy_name]
+            
+            print(f"\n🔄 Switched to {strategy_name.upper()} strategy:")
+            print(f"   📊 Max Data Points: {tier_settings['max_points']:,}")
+            print(f"   ⏰ Interval: {tier_settings['interval']} seconds")
+            print(f"   📈 Purpose: {tier_settings['purpose']}")
+            
+            # Update signal generation parameters based on strategy
+            if strategy_name == 'scalping':
+                print(f"   🎯 Strategy: Quick scalping (2% target)")
+                print(f"   ⚡ Cooldown: 30 seconds")
+            elif strategy_name == 'swing':
+                print(f"   🎯 Strategy: Swing trading (5-15% target)")
+                print(f"   🌊 Cooldown: 2-5 minutes")
+            elif strategy_name == 'position':
+                print(f"   🎯 Strategy: Position trading (20%+ target)")
+                print(f"   📊 Cooldown: 10-30 minutes")
+            
+            return True
+        else:
+            print(f"❌ Invalid strategy: {strategy_name}")
+            print(f"   Available: {list(self.data_tiers.keys())}")
+            return False
+
+    def show_strategy_info(self):
+        """Tampilkan informasi strategy saat ini"""
+        current_tier = self.get_current_tier_settings()
+        
+        print(f"\n📊 CURRENT TRADING STRATEGY:")
+        print(f"{'='*50}")
+        print(f"🎯 Strategy: {self.current_tier.upper()}")
+        print(f"📈 Max Data Points: {current_tier['max_points']:,}")
+        print(f"⏰ Data Interval: {current_tier['interval']} seconds")
+        print(f"📋 Purpose: {current_tier['purpose']}")
+        
+        # Strategy-specific info
+        if self.current_tier == 'scalping':
+            print(f"⚡ Target Profit: 2% (quick scalp)")
+            print(f"🔄 Signal Frequency: High (30s cooldown)")
+            print(f"📊 Analysis: Real-time RSI, momentum, order book")
+        elif self.current_tier == 'swing':
+            print(f"🌊 Target Profit: 5-15% (swing movement)")
+            print(f"🔄 Signal Frequency: Medium (2-5 min cooldown)")
+            print(f"📊 Analysis: MA crossover, trend patterns")
+        elif self.current_tier == 'position':
+            print(f"📊 Target Profit: 20%+ (long-term trend)")
+            print(f"🔄 Signal Frequency: Low (10-30 min cooldown)")
+            print(f"📊 Analysis: Weekly patterns, fundamental trends")
+        
+        print(f"\n💡 To switch strategy: bot.switch_trading_strategy('swing')")
 
 if __name__ == "__main__":
     # Buat bot dengan semua pairs yang enabled
